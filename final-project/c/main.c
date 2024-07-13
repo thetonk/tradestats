@@ -1,17 +1,20 @@
-#define SYMBOL_LENGTH 50
-#define SUBSCRIBE_MESSAGE_LENGTH 200
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
+#include <stdint.h>
 #include <libwebsockets.h>
+#include <pthread.h>
+#include <unistd.h>
 #include "include/cJSON.h"
+#include "include/vector.h"
+#include "include/constants.h"
 
 static int bExit;
 static char tradeSymbol[SYMBOL_LENGTH] = {0};
 static int bDenyDeflate = 1;
 static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void *user, void* in, size_t len);
-
+static Vector* myVector;
 
 // Escape the loop when a SIGINT signal is received
 static void onSigInt(int sig)
@@ -80,11 +83,21 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 		if (data != NULL){
 			cJSON *item;
 			cJSON_ArrayForEach(item, data){
-				cJSON *priceItem, *timeItem, *volumeItem;
+				cJSON *priceItem, *timeItem, *volumeItem, *symbolItem;
+				trade tradeItem;
 				timeItem = cJSON_GetObjectItem(item, "t");
 				priceItem = cJSON_GetObjectItem(item, "p");
 				volumeItem = cJSON_GetObjectItem(item, "v");
-				lwsl_notice("Unix time: %.0lf, price: %.2lf, volume: %lf\n", timeItem->valuedouble/1000, priceItem->valuedouble, volumeItem->valuedouble);
+				symbolItem = cJSON_GetObjectItemCaseSensitive(item, "s");
+				strcpy(tradeItem.symbol, symbolItem->valuestring);
+				tradeItem.price = priceItem->valuedouble;
+				tradeItem.timestamp = timeItem->valuedouble/1000;
+				tradeItem.volume = volumeItem->valuedouble;
+				pthread_mutex_lock(myVector->mutex);
+				vector_push_back(myVector, &tradeItem);
+				pthread_cond_signal(myVector->isEmpty);
+				pthread_mutex_unlock(myVector->mutex);
+				lwsl_notice("Unix time: %.0lf, symbol: %s, price: %.2lf, volume: %lf\n",timeItem->valuedouble/1000, symbolItem->valuestring,priceItem->valuedouble, volumeItem->valuedouble);
 			}
 		}
 	}
@@ -124,6 +137,22 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 	}
 
 	return 0;
+}
+
+void *consumer(void *q){
+	trade mytrade;
+	Vector *vec = (Vector*) q;
+	while(!bExit){
+		pthread_mutex_lock(vec->mutex);
+		while(vec->size == 0 && !bExit){
+			lwsl_warn("Thread sleeping, vector empty\n");
+			pthread_cond_wait(vec->isEmpty,vec->mutex);
+		}
+		vector_pop(myVector, &mytrade);
+		lwsl_info("consumer thread got price %.2lf of symbol %s, timestamp: %ld, volume: %lf\n",mytrade.price,mytrade.symbol,mytrade.timestamp,mytrade.volume);
+		pthread_mutex_unlock(vec->mutex);
+	}
+	return NULL;
 }
 
 // Main application entry
@@ -180,6 +209,7 @@ int main(int argc, char *argv[])
 	clientConnectInfo.protocol = protocols[PROTOCOL_TEST].name; // We use our test protocol
 	clientConnectInfo.pwsi = &wsiTest; // The created client should be fed inside the wsi_test variable
 	lwsl_notice("Connecting to %s://%s:%d%s \n\n", urlProtocol, clientConnectInfo.address, clientConnectInfo.port, clientConnectInfo.path);
+	myVector = vector_init(10);
 	// Connect with the client info
 	lws_client_connect_via_info(&clientConnectInfo);
 	if (wsiTest == NULL)
@@ -187,14 +217,19 @@ int main(int argc, char *argv[])
 		lwsl_err("Error creating the client\n");
 		return 1;
 	}
+	pthread_t thread;
+	pthread_create(&thread,NULL,consumer,myVector);
 	// Main loop runs till bExit is true, which forces an exit of this loop
 	while (!bExit)
 	{
 		// LWS' function to run the message loop, which polls in this example every 50 milliseconds on our created context
-		lws_service(ctx, 50);
+		lws_service(ctx, 5000);
 	}
-	// Destroy the context
+	// Destroy the context, and wake up any threads sleeping
+	pthread_cond_signal(myVector->isEmpty);
+	pthread_join(thread,NULL);
 	lws_context_destroy(ctx);
-	lwsl_notice("Done executing.\n");
+	vector_destroy(myVector);
+	printf("Done executing.\n");
 	return 0;
 }
