@@ -1,1 +1,6 @@
 *.txt
+.env
+.venv/
+*.log
+*.json
+!requirements.txt
