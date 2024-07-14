@@ -158,18 +158,20 @@ void *consumer(void *q){
 // Main application entry
 int main(int argc, char *argv[])
 {
-	if(argc == 2){
-		strcpy(tradeSymbol, argv[1]);
-		//printf("%s\n",argv[1]);
+	char path[80];
+	if(argc == 3){
+		strcpy(tradeSymbol, argv[2]);
+		snprintf(path,80,"?token=%s",argv[1]);
 	}
 	else{
-		strcpy(tradeSymbol, "COINBASE:BTC-EUR");
+		printf("You must specify your token first and the trading symbol, (e.g COINBASE:BTC-EUR)!\n");
+		printf("Usage: %s TOKEN SYMBOL\n",argv[0]);
+		return 3;
 	}
 	lws_set_log_level(LLL_ERR| LLL_WARN | LLL_NOTICE | LLL_INFO | LLL_USER, lwsl_emit_stderr);
 	signal(SIGINT, onSigInt); // Register the SIGINT handler
 	// Connection info
 	char inputURL[] = "wss://ws.finnhub.io";
-	int inputPort = 443;
 	struct lws_context_creation_info ctxCreationInfo; // Context creation info
 	struct lws_client_connect_info clientConnectInfo; // Client creation info
 	struct lws_context *ctx; // The context to use
@@ -202,7 +204,7 @@ int main(int argc, char *argv[])
 	clientConnectInfo.context = ctx; // Use our created context
     clientConnectInfo.ssl_connection = LCCSCF_USE_SSL;
     clientConnectInfo.port = 443;
-	clientConnectInfo.path = "?token=your-finnhub-token"; // Set the info's path to the fixed up url path
+	clientConnectInfo.path = path;
 	clientConnectInfo.host = clientConnectInfo.address; // Set the connections host to the address
 	clientConnectInfo.origin = clientConnectInfo.address; // Set the conntections origin to the address
 	clientConnectInfo.ietf_version_or_minus_one = -1; // IETF version is -1 (the latest one)

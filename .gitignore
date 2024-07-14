@@ -3,4 +3,6 @@
 .venv/
 *.log
 *.json
+build/
 !requirements.txt
+!CMakeLists.txt
