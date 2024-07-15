@@ -1,25 +1,25 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <string.h>
 #include <signal.h>
-#include <stdint.h>
 #include <libwebsockets.h>
 #include <pthread.h>
-#include <unistd.h>
+#include <time.h>
 #include "include/cJSON.h"
 #include "include/vector.h"
 #include "include/constants.h"
 
-static int bExit;
+static bool bExit = false;
 static char tradeSymbol[SYMBOL_LENGTH] = {0};
-static int bDenyDeflate = 1;
+static bool bDenyDeflate = true;
 static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void *user, void* in, size_t len);
 static Vector* myVector;
 
 // Escape the loop when a SIGINT signal is received
 static void onSigInt(int sig)
 {
-	bExit = 1;
+	bExit = true;
 }
 
 // The registered protocols
@@ -74,7 +74,7 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 			if (error_ptr != NULL){
 				lwsl_err("Error before: %s\n", error_ptr);
 			}
-			bExit = 1;
+			bExit = true;
 			return -1;
 		}
 		//printf("========================================================================\n");
@@ -139,18 +139,43 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 	return 0;
 }
 
-void *consumer(void *q){
-	trade mytrade;
+void *consumerCandle(void *q){
 	Vector *vec = (Vector*) q;
+	struct tm firstTime, lastTime;
+	trade first,last,min,max;
+	double totalVolume = 0;
+	bool resetMeasure = true;
 	while(!bExit){
 		pthread_mutex_lock(vec->mutex);
 		while(vec->size == 0 && !bExit){
 			lwsl_warn("Thread sleeping, vector empty\n");
 			pthread_cond_wait(vec->isEmpty,vec->mutex);
 		}
-		vector_pop(myVector, &mytrade);
-		lwsl_info("consumer thread got price %.2lf of symbol %s, timestamp: %ld, volume: %lf\n",mytrade.price,mytrade.symbol,mytrade.timestamp,mytrade.volume);
+		vector_pop(myVector, &last);
 		pthread_mutex_unlock(vec->mutex);
+		lastTime = *localtime(&last.timestamp);
+		lwsl_info("consumerCandle thread got price %.2lf of symbol %s, time: %02d:%02d:%02d, volume: %lf\n",last.price,last.symbol,lastTime.tm_hour,lastTime.tm_min,lastTime.tm_sec,last.volume);
+		if(resetMeasure){
+			first = last;
+			min = last;
+			max = last;
+			firstTime = *localtime(&first.timestamp);
+			resetMeasure = false;
+		}
+		else{
+			if(last.price < min.price){
+				min = last;
+			}
+			if(last.price > max.price){
+				max = last;
+			}
+		}
+		totalVolume += last.volume;
+		if(firstTime.tm_min < lastTime.tm_min){
+			lwsl_info("[LAST MINUTE CANDLE] max: %.2lf min: %.2lf first: %.2lf, last %.2lf total volume: %.2lf\n",max.price,min.price,first.price,last.price,totalVolume);
+			resetMeasure = true;
+			totalVolume = 0;
+		}
 	}
 	return NULL;
 }
@@ -220,7 +245,7 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 	pthread_t thread;
-	pthread_create(&thread,NULL,consumer,myVector);
+	pthread_create(&thread,NULL,consumerCandle,myVector);
 	// Main loop runs till bExit is true, which forces an exit of this loop
 	while (!bExit)
 	{

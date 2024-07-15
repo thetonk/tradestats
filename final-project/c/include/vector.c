@@ -1,10 +1,11 @@
 #include "vector.h"
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 
 Vector* vector_init(size_t initialCapacity) {
-    if(initialCapacity < 1) return NULL; //return -1 if invalid
+    if(initialCapacity < 1) return NULL;
     Vector* vec = (Vector*) malloc(sizeof(Vector));
     vec->data = (trade*) malloc(initialCapacity*sizeof(trade));
     vec->size = 0;
@@ -29,27 +30,43 @@ void vector_destroy(Vector* vec) {
     vec = NULL;
 }
 
-int vector_push_back(Vector *vec, trade* value) {
+bool vector_push_back(Vector *vec, trade* value) {
     vec->size++;
     if(vec->size >= vec->capacity){
         //reallocate memory
         vec->capacity = 2*vec->size;
-        printf("normal reallocation\n");
+        //printf("normal reallocation\n");
         trade* newarray = realloc(vec->data, vec->capacity*sizeof(trade));
-        if(newarray == NULL) return -1; //memory allocation failed
+        if(newarray == NULL) return false; //memory allocation failed
         else{
             vec->data = newarray;
         }
     }
     memcpy(vec->data+vec->size-1,value, sizeof(trade));
-    return 0;
+    return true;
 }
 
-int vector_pop(Vector* vec, trade* out) {
+bool vector_pop(Vector* vec, trade* out) {
     if(vec->size > 0){
         vec->size--;
         memcpy(out, vec->data,sizeof(trade));
-        return 0;
+        return true;
     }
-    else return -1;
+    else return false;
+}
+
+bool vector_peek_front(Vector *vec, trade *out){
+    if(vec->size > 0){
+        memcpy(out, vec->data, sizeof(trade));
+        return true;
+    }
+    else return false;
+}
+
+bool vector_peek_back(Vector *vec, trade *out){
+    if(vec->size > 0){
+        memcpy(out, vec->data + vec->size -1, sizeof(trade));
+        return true;
+    }
+    else return false;
 }
