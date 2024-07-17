@@ -4,5 +4,6 @@
 *.log
 *.json
 build/
+.cache/
 !requirements.txt
 !CMakeLists.txt

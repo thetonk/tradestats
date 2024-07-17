@@ -7,23 +7,19 @@
 #include <time.h>
 
 typedef struct {
-	char symbol[SYMBOL_LENGTH];
-	time_t timestamp;
-	double price, volume;
-} trade;
-
-typedef struct {
-    trade* data;
+    void* data;
     size_t size;
     size_t capacity;
+    size_t elemSize;
     pthread_cond_t* isEmpty;
     pthread_mutex_t* mutex;
 } Vector;
 
-Vector* vector_init(size_t initialCapacity);
+Vector* vector_init(size_t initialCapacity, size_t elemSize);
 void vector_destroy(Vector *vec);
-bool vector_push_back(Vector *vec, trade* value);
-bool vector_pop(Vector* vec, trade* out);
-bool vector_peek_front(Vector *vec, trade* out);
-bool vector_peek_back(Vector* vec, trade*out);
+void vector_clear(Vector *vec);
+bool vector_push_back(Vector *vec, void* value);
+bool vector_pop(Vector* vec, void* out);
+bool vector_peek_front(Vector *vec, void* out);
+bool vector_peek_back(Vector* vec, void*out);
 #endif // VECTOR_H_

@@ -4,12 +4,13 @@
 #include <stdio.h>
 #include <string.h>
 
-Vector* vector_init(size_t initialCapacity) {
+Vector* vector_init(size_t initialCapacity, size_t elemSize) {
     if(initialCapacity < 1) return NULL;
     Vector* vec = (Vector*) malloc(sizeof(Vector));
-    vec->data = (trade*) malloc(initialCapacity*sizeof(trade));
+    vec->data = (void*) malloc(initialCapacity*elemSize);
     vec->size = 0;
     vec->capacity = initialCapacity;
+    vec->elemSize = elemSize;
     vec->mutex = (pthread_mutex_t*) malloc(sizeof(pthread_mutex_t));
     pthread_mutex_init(vec->mutex,NULL);
     vec->isEmpty = (pthread_cond_t*) malloc(sizeof(pthread_cond_t));
@@ -21,6 +22,7 @@ void vector_destroy(Vector* vec) {
     free(vec->data);
     vec->size = 0;
     vec->capacity = 0;
+    vec->elemSize = 0;
     vec->data = NULL;
     pthread_mutex_destroy(vec->mutex);
     pthread_cond_destroy(vec->isEmpty);
@@ -30,42 +32,48 @@ void vector_destroy(Vector* vec) {
     vec = NULL;
 }
 
-bool vector_push_back(Vector *vec, trade* value) {
+void vector_clear(Vector *vec){
+    vec->size = 0;
+    memset(vec->data,0,vec->capacity*sizeof(vec->elemSize));
+}
+
+bool vector_push_back(Vector *vec, void* value) {
     vec->size++;
     if(vec->size >= vec->capacity){
         //reallocate memory
         vec->capacity = 2*vec->size;
         //printf("normal reallocation\n");
-        trade* newarray = realloc(vec->data, vec->capacity*sizeof(trade));
+        void* newarray = realloc(vec->data, vec->capacity*vec->elemSize);
         if(newarray == NULL) return false; //memory allocation failed
         else{
             vec->data = newarray;
         }
     }
-    memcpy(vec->data+vec->size-1,value, sizeof(trade));
+    memcpy((char*) vec->data+(vec->size-1)*vec->elemSize,value, vec->elemSize);
     return true;
 }
 
-bool vector_pop(Vector* vec, trade* out) {
+bool vector_pop(Vector* vec, void* out) {
     if(vec->size > 0){
+        memcpy(out,(char*) vec->data,vec->elemSize);
+        memcpy((char*) vec->data, (char *) vec->data + vec->elemSize, (vec->size-1)*vec->elemSize);
         vec->size--;
-        memcpy(out, vec->data,sizeof(trade));
         return true;
     }
     else return false;
 }
 
-bool vector_peek_front(Vector *vec, trade *out){
+bool vector_peek_front(Vector *vec, void *out){
     if(vec->size > 0){
-        memcpy(out, vec->data, sizeof(trade));
+        memcpy(out,(char*) vec->data, vec->elemSize);
         return true;
     }
     else return false;
 }
 
-bool vector_peek_back(Vector *vec, trade *out){
+bool vector_peek_back(Vector *vec, void *out){
     if(vec->size > 0){
-        memcpy(out, vec->data + vec->size -1, sizeof(trade));
+        memcpy(out,(char*) vec->data + (vec->size -1)*vec->elemSize, vec->elemSize);
         return true;
     }
     else return false;

@@ -7,12 +7,14 @@
 #include <pthread.h>
 #include <time.h>
 #include "include/cJSON.h"
+#include "include/utilities.h"
 #include "include/vector.h"
 #include "include/constants.h"
 
 static bool bExit = false;
 static char tradeSymbol[SYMBOL_LENGTH] = {0};
 static bool bDenyDeflate = true;
+static char** Symbols;
 static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void *user, void* in, size_t len);
 static Vector* myVector;
 
@@ -68,6 +70,7 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 	case LWS_CALLBACK_CLIENT_RECEIVE:
 	{
 		cJSON *jsonResponse = cJSON_Parse(in);
+		uint8_t candleStartMinute = 0;
 		if(jsonResponse == NULL){
 			lwsl_err("Error parsing JSON response!\n");
 			const char *error_ptr = cJSON_GetErrorPtr();
@@ -85,6 +88,7 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 			cJSON_ArrayForEach(item, data){
 				cJSON *priceItem, *timeItem, *volumeItem, *symbolItem;
 				trade tradeItem;
+				struct tm ctimestamp;
 				timeItem = cJSON_GetObjectItem(item, "t");
 				priceItem = cJSON_GetObjectItem(item, "p");
 				volumeItem = cJSON_GetObjectItem(item, "v");
@@ -92,12 +96,13 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 				strcpy(tradeItem.symbol, symbolItem->valuestring);
 				tradeItem.price = priceItem->valuedouble;
 				tradeItem.timestamp = timeItem->valuedouble/1000;
+				ctimestamp = *localtime(&tradeItem.timestamp);
 				tradeItem.volume = volumeItem->valuedouble;
 				pthread_mutex_lock(myVector->mutex);
 				vector_push_back(myVector, &tradeItem);
 				pthread_cond_signal(myVector->isEmpty);
 				pthread_mutex_unlock(myVector->mutex);
-				lwsl_notice("Unix time: %.0lf, symbol: %s, price: %.2lf, volume: %lf\n",timeItem->valuedouble/1000, symbolItem->valuestring,priceItem->valuedouble, volumeItem->valuedouble);
+				printf("Time: %02d:%02d:%02d, symbol: %s, price: %.2lf, volume: %lf\n",ctimestamp.tm_hour,ctimestamp.tm_min,ctimestamp.tm_sec,symbolItem->valuestring,priceItem->valuedouble, volumeItem->valuedouble);
 			}
 		}
 	}
@@ -151,10 +156,10 @@ void *consumerCandle(void *q){
 			lwsl_warn("Thread sleeping, vector empty\n");
 			pthread_cond_wait(vec->isEmpty,vec->mutex);
 		}
-		vector_pop(myVector, &last);
+		vector_pop(myVector,(trade *) &last);
 		pthread_mutex_unlock(vec->mutex);
 		lastTime = *localtime(&last.timestamp);
-		lwsl_info("consumerCandle thread got price %.2lf of symbol %s, time: %02d:%02d:%02d, volume: %lf\n",last.price,last.symbol,lastTime.tm_hour,lastTime.tm_min,lastTime.tm_sec,last.volume);
+		printf("consumerCandle thread got price %.2lf of symbol %s, time: %02d:%02d:%02d, volume: %lf\n",last.price,last.symbol,lastTime.tm_hour,lastTime.tm_min,lastTime.tm_sec,last.volume);
 		if(resetMeasure){
 			first = last;
 			min = last;
@@ -184,6 +189,7 @@ void *consumerCandle(void *q){
 int main(int argc, char *argv[])
 {
 	char path[80];
+	size_t lines;
 	if(argc == 3){
 		strcpy(tradeSymbol, argv[2]);
 		snprintf(path,80,"?token=%s",argv[1]);
@@ -193,6 +199,8 @@ int main(int argc, char *argv[])
 		printf("Usage: %s TOKEN SYMBOL\n",argv[0]);
 		return 3;
 	}
+	//lines = getFileLineCount("test.txt"); TODO
+	//Symbols = readSymbolsFile("test.txt", lines); TODO
 	lws_set_log_level(LLL_ERR| LLL_WARN | LLL_NOTICE | LLL_INFO | LLL_USER, lwsl_emit_stderr);
 	signal(SIGINT, onSigInt); // Register the SIGINT handler
 	// Connection info
@@ -200,7 +208,6 @@ int main(int argc, char *argv[])
 	struct lws_context_creation_info ctxCreationInfo; // Context creation info
 	struct lws_client_connect_info clientConnectInfo; // Client creation info
 	struct lws_context *ctx; // The context to use
-
 	struct lws *wsiTest; // WebSocket interface
 	const char *urlProtocol, *urlTempPath; // the protocol of the URL, and a temporary pointer to the path
 	// Set both information to empty and allocate it's memory
@@ -236,7 +243,7 @@ int main(int argc, char *argv[])
 	clientConnectInfo.protocol = protocols[PROTOCOL_TEST].name; // We use our test protocol
 	clientConnectInfo.pwsi = &wsiTest; // The created client should be fed inside the wsi_test variable
 	lwsl_notice("Connecting to %s://%s:%d%s \n\n", urlProtocol, clientConnectInfo.address, clientConnectInfo.port, clientConnectInfo.path);
-	myVector = vector_init(10);
+	myVector = vector_init(10,sizeof(trade));
 	// Connect with the client info
 	lws_client_connect_via_info(&clientConnectInfo);
 	if (wsiTest == NULL)
@@ -255,8 +262,13 @@ int main(int argc, char *argv[])
 	// Destroy the context, and wake up any threads sleeping
 	pthread_cond_signal(myVector->isEmpty);
 	pthread_join(thread,NULL);
+	//free resources
 	lws_context_destroy(ctx);
 	vector_destroy(myVector);
+	//for(size_t i = 0; i < lines; ++i){
+	//	free(Symbols[i]);
+	//} TODO
+	free(Symbols);
 	printf("Done executing.\n");
 	return 0;
 }
