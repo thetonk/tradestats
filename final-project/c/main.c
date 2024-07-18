@@ -1,3 +1,4 @@
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -12,7 +13,8 @@
 #include "include/constants.h"
 
 static bool bExit = false;
-static char tradeSymbol[SYMBOL_LENGTH] = {0};
+static size_t symbolCount;
+static Candle *candles;
 static bool bDenyDeflate = true;
 static char** Symbols;
 static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void *user, void* in, size_t len);
@@ -83,6 +85,7 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 		//printf("========================================================================\n");
 		//printf("[Test Protocol] Received data: \"%s\", length: %zu bytes\n", (char*)in,len);
 		cJSON *data = cJSON_GetObjectItemCaseSensitive(jsonResponse, "data");
+		size_t symbolID;
 		if (data != NULL){
 			cJSON *item;
 			cJSON_ArrayForEach(item, data){
@@ -93,7 +96,8 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 				priceItem = cJSON_GetObjectItem(item, "p");
 				volumeItem = cJSON_GetObjectItem(item, "v");
 				symbolItem = cJSON_GetObjectItemCaseSensitive(item, "s");
-				strcpy(tradeItem.symbol, symbolItem->valuestring);
+				symbolID = searchString(Symbols, symbolItem->valuestring, symbolCount);
+				tradeItem.symbolID = symbolID;
 				tradeItem.price = priceItem->valuedouble;
 				tradeItem.timestamp = timeItem->valuedouble/1000;
 				ctimestamp = *localtime(&tradeItem.timestamp);
@@ -102,7 +106,7 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 				vector_push_back(myVector, &tradeItem);
 				pthread_cond_signal(myVector->isEmpty);
 				pthread_mutex_unlock(myVector->mutex);
-				printf("Time: %02d:%02d:%02d, symbol: %s, price: %.2lf, volume: %lf\n",ctimestamp.tm_hour,ctimestamp.tm_min,ctimestamp.tm_sec,symbolItem->valuestring,priceItem->valuedouble, volumeItem->valuedouble);
+				//printf("Time: %02d:%02d:%02d, symbol: %s, price: %.2lf, volume: %lf\n",ctimestamp.tm_hour,ctimestamp.tm_min,ctimestamp.tm_sec,Symbols[symbolID],priceItem->valuedouble, volumeItem->valuedouble);
 			}
 		}
 	}
@@ -122,9 +126,12 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 	case LWS_CALLBACK_CLIENT_ESTABLISHED:
 		lwsl_info("[Test Protocol] Connection to server established.\n");
 		char msg[SUBSCRIBE_MESSAGE_LENGTH];
-		snprintf(msg, SUBSCRIBE_MESSAGE_LENGTH,"{\"type\":\"subscribe\", \"symbol\":\"%s\"}",tradeSymbol);
-		lwsl_info("[Test Protocol] Writing \"%s\" to server.\n", msg);
-		lws_write(wsi, (unsigned char*)msg, strlen(msg), LWS_WRITE_TEXT);
+		for(size_t i = 0; i < symbolCount;++i){
+			memset(msg, 0, SUBSCRIBE_MESSAGE_LENGTH);
+			snprintf(msg, SUBSCRIBE_MESSAGE_LENGTH,"{\"type\":\"subscribe\", \"symbol\":\"%s\"}",Symbols[i]);
+			lwsl_info("[Test Protocol] Writing \"%s\" to server.\n", msg);
+			lws_write(wsi, (unsigned char*)msg, strlen(msg), LWS_WRITE_TEXT);
+		}
 		break;
 
 		// The server notifies us that we can write data
@@ -147,40 +154,44 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 void *consumerCandle(void *q){
 	Vector *vec = (Vector*) q;
 	struct tm firstTime, lastTime;
-	trade first,last,min,max;
-	double totalVolume = 0;
-	bool resetMeasure = true;
+	trade last;
 	while(!bExit){
 		pthread_mutex_lock(vec->mutex);
 		while(vec->size == 0 && !bExit){
-			lwsl_warn("Thread sleeping, vector empty\n");
+			//lwsl_warn("Thread sleeping, vector empty\n");
 			pthread_cond_wait(vec->isEmpty,vec->mutex);
 		}
 		vector_pop(myVector,(trade *) &last);
 		pthread_mutex_unlock(vec->mutex);
-		lastTime = *localtime(&last.timestamp);
-		printf("consumerCandle thread got price %.2lf of symbol %s, time: %02d:%02d:%02d, volume: %lf\n",last.price,last.symbol,lastTime.tm_hour,lastTime.tm_min,lastTime.tm_sec,last.volume);
-		if(resetMeasure){
-			first = last;
-			min = last;
-			max = last;
-			firstTime = *localtime(&first.timestamp);
-			resetMeasure = false;
+		candles[last.symbolID].last = last;
+		lastTime = *localtime(&candles[last.symbolID].last.timestamp);
+		firstTime = *localtime(&(candles[last.symbolID].first.timestamp));
+		//printf("consumerCandle thread got price %.2lf of symbol %s, time: %02d:%02d:%02d, volume: %lf\n",last.price,Symbols[last.symbolID],lastTime.tm_hour,lastTime.tm_min,lastTime.tm_sec,last.volume);
+		if ((int64_t) candles[last.symbolID].totalVolume == (int64_t) INIT_VOLUME_VALUE){
+			candles[last.symbolID].totalVolume = 0;
+			candles[last.symbolID].first = last;
+			candles[last.symbolID].min = last;
+			candles[last.symbolID].max = last;
+			printf("candle %s initialized!\n", Symbols[last.symbolID]);
+		}
+		else if(firstTime.tm_min < lastTime.tm_min){
+			Candle finalCandle = candles[last.symbolID];
+			printf("[LAST MINUTE CANDLE %s] max: %.2lf min: %.2lf first: %.2lf, last %.2lf total volume: %.2lf\n",Symbols[last.symbolID],finalCandle.max.price,finalCandle.min.price,finalCandle.first.price,finalCandle.last.price,finalCandle.totalVolume);
+			candles[last.symbolID].totalVolume = 0;
+			candles[last.symbolID].first = last;
+			candles[last.symbolID].min = last;
+			candles[last.symbolID].max = last;
 		}
 		else{
-			if(last.price < min.price){
-				min = last;
+			if(last.price < candles[last.symbolID].min.price){
+				candles[last.symbolID].min = last;
 			}
-			if(last.price > max.price){
-				max = last;
+			if(last.price > candles[last.symbolID].max.price){
+				candles[last.symbolID].max = last;
 			}
+			candles[last.symbolID].totalVolume += last.volume;
 		}
-		totalVolume += last.volume;
-		if(firstTime.tm_min < lastTime.tm_min){
-			lwsl_info("[LAST MINUTE CANDLE] max: %.2lf min: %.2lf first: %.2lf, last %.2lf total volume: %.2lf\n",max.price,min.price,first.price,last.price,totalVolume);
-			resetMeasure = true;
-			totalVolume = 0;
-		}
+		//printf("%s first %02d:%02d last minute %02d:%02d\n",Symbols[last.symbolID],firstTime.tm_min,firstTime.tm_sec, lastTime.tm_min,lastTime.tm_sec);
 	}
 	return NULL;
 }
@@ -189,18 +200,24 @@ void *consumerCandle(void *q){
 int main(int argc, char *argv[])
 {
 	char path[80];
-	size_t lines;
+	char *fileName;
 	if(argc == 3){
-		strcpy(tradeSymbol, argv[2]);
+		fileName = argv[2];
 		snprintf(path,80,"?token=%s",argv[1]);
 	}
 	else{
 		printf("You must specify your token first and the trading symbol, (e.g COINBASE:BTC-EUR)!\n");
-		printf("Usage: %s TOKEN SYMBOL\n",argv[0]);
+		printf("Usage: %s TOKEN SYMBOLFILE\n",argv[0]);
 		return 3;
 	}
-	//lines = getFileLineCount("test.txt"); TODO
-	//Symbols = readSymbolsFile("test.txt", lines); TODO
+	symbolCount = getFileLineCount(fileName);
+	printf("Found %zu symbols!\n", symbolCount);
+	Symbols = readSymbolsFile(fileName, symbolCount);
+	quicksortStrings(Symbols, symbolCount);
+	candles = (Candle*) malloc(symbolCount*sizeof(Candle));
+	for(size_t i = 0; i < symbolCount; ++i){
+		candles[i].totalVolume = INIT_VOLUME_VALUE; //initial dummy value
+	}
 	lws_set_log_level(LLL_ERR| LLL_WARN | LLL_NOTICE | LLL_INFO | LLL_USER, lwsl_emit_stderr);
 	signal(SIGINT, onSigInt); // Register the SIGINT handler
 	// Connection info
@@ -257,7 +274,7 @@ int main(int argc, char *argv[])
 	while (!bExit)
 	{
 		// LWS' function to run the message loop, which polls in this example every 50 milliseconds on our created context
-		lws_service(ctx, 5000);
+		lws_service(ctx, 100);
 	}
 	// Destroy the context, and wake up any threads sleeping
 	pthread_cond_signal(myVector->isEmpty);
@@ -265,10 +282,11 @@ int main(int argc, char *argv[])
 	//free resources
 	lws_context_destroy(ctx);
 	vector_destroy(myVector);
-	//for(size_t i = 0; i < lines; ++i){
-	//	free(Symbols[i]);
-	//} TODO
+	for(size_t i = 0; i < symbolCount; ++i){
+		free(Symbols[i]);
+	}
 	free(Symbols);
+	free(candles);
 	printf("Done executing.\n");
 	return 0;
 }

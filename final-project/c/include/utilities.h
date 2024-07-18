@@ -5,10 +5,16 @@
 #include "constants.h"
 
 typedef struct {
-	char symbol[SYMBOL_LENGTH];
+	size_t symbolID;
 	time_t timestamp;
 	double price, volume;
 } trade;
+
+typedef struct {
+	trade first,last,max,min;
+	double totalVolume;
+	size_t symbolID;
+} Candle;
 
 char** readSymbolsFile(char *filename, size_t linecount);
 size_t getFileLineCount(char *filename);

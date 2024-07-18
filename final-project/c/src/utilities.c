@@ -31,10 +31,11 @@ void quicksortStrings(char **strings, size_t len){
 }
 
 size_t searchString(char **strings, char *findStr, size_t len){
-    size_t first = 0, last = len,middle;
-    int value = strcmp(strings[middle], findStr);
+    size_t first = 0, last = len-1, middle;
+    int value;
     while(first <= last){
         middle = first + (last-first)/2;
+        value = strcmp(strings[middle], findStr);
         if(value == 0){
             //found it
             return middle;
@@ -73,7 +74,7 @@ char** readSymbolsFile(char *filename, size_t linecount){
     }
     for(size_t i = 0; i < linecount; ++i){
         strings[i] = (char*) malloc(SYMBOL_LENGTH*sizeof(char));
-        fgets(strings[i],SYMBOL_LENGTH,file);
+        fscanf(file, "%s", strings[i]);
     }
     fclose(file);
     return strings;

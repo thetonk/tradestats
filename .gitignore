@@ -7,3 +7,4 @@ build/
 .cache/
 !requirements.txt
 !CMakeLists.txt
+!symbols.txt
