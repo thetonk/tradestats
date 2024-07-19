@@ -18,7 +18,7 @@ typedef struct {
 
 char** readSymbolsFile(char *filename, size_t linecount);
 size_t getFileLineCount(char *filename);
-bool writeCandleFile(); //TODO
+void writeCandleFile(char *symbolName, Candle* candle);
 bool writeMovingAverageFile(); //TODO
 bool writeSymbolTradesFile(); //TODO
 void quicksortStrings(char **strings, size_t len);

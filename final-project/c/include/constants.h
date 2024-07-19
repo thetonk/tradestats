@@ -4,4 +4,5 @@
 #define SUBSCRIBE_MESSAGE_LENGTH 200
 #define QUEUESIZE 5
 #define INIT_VOLUME_VALUE -1
+#define OUTPUT_DIRECTORY "out"
 #endif // CONSTANTS_H_

@@ -7,6 +7,7 @@
 #include <libwebsockets.h>
 #include <pthread.h>
 #include <time.h>
+#include <sys/stat.h>
 #include "include/cJSON.h"
 #include "include/utilities.h"
 #include "include/vector.h"
@@ -177,6 +178,7 @@ void *consumerCandle(void *q){
 		else if(firstTime.tm_min < lastTime.tm_min){
 			Candle finalCandle = candles[last.symbolID];
 			printf("[LAST MINUTE CANDLE %s] max: %.2lf min: %.2lf first: %.2lf, last %.2lf total volume: %.2lf\n",Symbols[last.symbolID],finalCandle.max.price,finalCandle.min.price,finalCandle.first.price,finalCandle.last.price,finalCandle.totalVolume);
+			writeCandleFile(Symbols[last.symbolID], &finalCandle);
 			candles[last.symbolID].totalVolume = 0;
 			candles[last.symbolID].first = last;
 			candles[last.symbolID].min = last;
@@ -210,6 +212,7 @@ int main(int argc, char *argv[])
 		printf("Usage: %s TOKEN SYMBOLFILE\n",argv[0]);
 		return 3;
 	}
+	mkdir(OUTPUT_DIRECTORY,0755); //create outputFolder
 	symbolCount = getFileLineCount(fileName);
 	printf("Found %zu symbols!\n", symbolCount);
 	Symbols = readSymbolsFile(fileName, symbolCount);

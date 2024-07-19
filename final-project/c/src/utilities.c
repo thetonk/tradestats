@@ -1,7 +1,11 @@
 #include "utilities.h"
 #include "constants.h"
-#include <stddef.h>
+#include <linux/limits.h>
+#include <stdint.h>
 #include <string.h>
+#include <errno.h>
+#include <sys/stat.h>
+#include <limits.h>
 #include <stdio.h>
 
 void swapStrings(char **str1, char **str2)
@@ -78,4 +82,28 @@ char** readSymbolsFile(char *filename, size_t linecount){
     }
     fclose(file);
     return strings;
+}
+
+void writeCandleFile(char *symbolName, Candle *candle){
+    //filename format will be SYMBOL_candles
+    //Write CSV file
+    char folderPath[PATH_MAX];
+    snprintf(folderPath,PATH_MAX, "%s/candleSticks",OUTPUT_DIRECTORY);
+    const size_t filenameLength = strlen(folderPath)+SYMBOL_LENGTH+strlen("_candles.csv");
+    char filename[filenameLength];
+    mkdir(folderPath, 0755);
+    size_t bytes = snprintf(filename,filenameLength,"out/candleSticks/%s_candles.csv",symbolName);
+    struct stat stats;
+    bool fileRequiresHeader = (stat(filename, &stats) != 0);
+    FILE *fp = fopen(filename, "a");
+    if (fp == NULL){
+        printf("Cannot create file %s. Reason: %s\n", filename, strerror(errno));
+        return;
+    }
+    if(fileRequiresHeader){
+        fputs("Symbol,Timestamp,First,Last,Min,Max,Total Volume\n", fp);
+    }
+    fprintf(fp,"%s,%zu,%lf,%lf,%lf,%lf,%lf\n",symbolName,candle->first.timestamp,candle->first.price,candle->last.price,
+            candle->min.price,candle->max.price,candle->totalVolume);
+    fclose(fp);
 }
