@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <errno.h>
+#include <stdbool.h>
 #include <sys/stat.h>
 #include <limits.h>
 #include <stdio.h>
@@ -52,7 +53,7 @@ size_t searchString(char **strings, char *findStr, size_t len){
             first = middle + 1;
         }
     }
-    return 0; //something is wrong
+    return UINT64_MAX; //something is wrong,return an invalid value
 }
 
 size_t getFileLineCount(char *filename){
@@ -92,7 +93,7 @@ void writeCandleFile(char *symbolName, Candle *candle){
     const size_t filenameLength = strlen(folderPath)+SYMBOL_LENGTH+strlen("_candles.csv");
     char filename[filenameLength];
     mkdir(folderPath, 0755);
-    size_t bytes = snprintf(filename,filenameLength,"out/candleSticks/%s_candles.csv",symbolName);
+    size_t bytes = snprintf(filename,filenameLength,"%s/%s_candles.csv",folderPath,symbolName);
     struct stat stats;
     bool fileRequiresHeader = (stat(filename, &stats) != 0);
     FILE *fp = fopen(filename, "a");
@@ -105,5 +106,52 @@ void writeCandleFile(char *symbolName, Candle *candle){
     }
     fprintf(fp,"%s,%zu,%lf,%lf,%lf,%lf,%lf\n",symbolName,candle->first.timestamp,candle->first.price,candle->last.price,
             candle->min.price,candle->max.price,candle->totalVolume);
+    fclose(fp);
+}
+
+void writeMovingAverageFile(char *symbolName, MovingAverage *movingAverage){
+    //filename format will be SYMBOL_movingAverages
+    //Write CSV file
+    char folderPath[PATH_MAX];
+    snprintf(folderPath,PATH_MAX, "%s/movingAverages",OUTPUT_DIRECTORY);
+    const size_t filenameLength = strlen(folderPath)+SYMBOL_LENGTH+strlen("_movingAverages.csv");
+    char filename[filenameLength];
+    mkdir(folderPath, 0755);
+    size_t bytes = snprintf(filename,filenameLength,"%s/%s_movingAverages.csv",folderPath,symbolName);
+    struct stat stats;
+    bool fileRequiresHeader = (stat(filename, &stats) != 0);
+    FILE *fp = fopen(filename, "a");
+    if (fp == NULL){
+        printf("Cannot create file %s. Reason: %s\n", filename, strerror(errno));
+        return;
+    }
+    if(fileRequiresHeader){
+        fputs("Symbol,Timestamp,Total Trades,Average Price,Total Volume\n", fp);
+    }
+    fprintf(fp,"%s,%zu,%zu,%lf,%lf\n",symbolName,movingAverage->first.timestamp,movingAverage->tradeCount,movingAverage->averagePrice,
+            movingAverage->totalVolume);
+    fclose(fp);
+}
+
+void writeSymbolTradesFile(char *symbolName, Trade *trade){
+    //filename format will be SYMBOL_trades
+    //Write CSV file
+    char folderPath[PATH_MAX];
+    snprintf(folderPath,PATH_MAX, "%s/tradeLogs",OUTPUT_DIRECTORY);
+    const size_t filenameLength = strlen(folderPath)+SYMBOL_LENGTH+strlen("_trades.csv");
+    char filename[filenameLength];
+    mkdir(folderPath, 0755);
+    size_t bytes = snprintf(filename,filenameLength,"%s/%s_trades.csv",folderPath,symbolName);
+    struct stat stats;
+    bool fileRequiresHeader = (stat(filename, &stats) != 0);
+    FILE *fp = fopen(filename, "a");
+    if (fp == NULL){
+        printf("Cannot create file %s. Reason: %s\n", filename, strerror(errno));
+        return;
+    }
+    if(fileRequiresHeader){
+        fputs("Symbol,Timestamp,Price,Volume\n", fp);
+    }
+    fprintf(fp,"%s,%zu,%lf,%lf\n",symbolName,trade->timestamp,trade->price,trade->volume);
     fclose(fp);
 }

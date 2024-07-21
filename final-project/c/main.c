@@ -14,17 +14,27 @@
 #include "include/constants.h"
 
 static bool bExit = false;
+//static bool tradeLogging = false
 static size_t symbolCount;
 static Candle *candles;
+static MovingAverage* movAverages;
 static bool bDenyDeflate = true;
 static char** Symbols;
+static pthread_t keyLogger;
 static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void *user, void* in, size_t len);
-static Vector* myVector;
+static Vector *candleConsVector, *movAvgConsVector, *tradeLogConsVector;
 
 // Escape the loop when a SIGINT signal is received
 static void onSigInt(int sig)
 {
+	printf("caught sigint!\n");
 	bExit = true;
+	//pthread_cancel(keyLogger); //stop keyLogger
+	//wake up any threads sleeping
+	pthread_cond_signal(candleConsVector->isEmpty);
+	pthread_cond_signal(movAvgConsVector->isEmpty);
+	pthread_cond_signal(tradeLogConsVector->isEmpty);
+	//tradeLogging = true;
 }
 
 // The registered protocols
@@ -73,7 +83,6 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 	case LWS_CALLBACK_CLIENT_RECEIVE:
 	{
 		cJSON *jsonResponse = cJSON_Parse(in);
-		uint8_t candleStartMinute = 0;
 		if(jsonResponse == NULL){
 			lwsl_err("Error parsing JSON response!\n");
 			const char *error_ptr = cJSON_GetErrorPtr();
@@ -91,7 +100,7 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 			cJSON *item;
 			cJSON_ArrayForEach(item, data){
 				cJSON *priceItem, *timeItem, *volumeItem, *symbolItem;
-				trade tradeItem;
+				Trade tradeItem;
 				struct tm ctimestamp;
 				timeItem = cJSON_GetObjectItem(item, "t");
 				priceItem = cJSON_GetObjectItem(item, "p");
@@ -103,10 +112,18 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 				tradeItem.timestamp = timeItem->valuedouble/1000;
 				ctimestamp = *localtime(&tradeItem.timestamp);
 				tradeItem.volume = volumeItem->valuedouble;
-				pthread_mutex_lock(myVector->mutex);
-				vector_push_back(myVector, &tradeItem);
-				pthread_cond_signal(myVector->isEmpty);
-				pthread_mutex_unlock(myVector->mutex);
+				pthread_mutex_lock(candleConsVector->mutex);
+				vector_push_back(candleConsVector, &tradeItem);
+				pthread_cond_signal(candleConsVector->isEmpty);
+				pthread_mutex_unlock(candleConsVector->mutex);
+				pthread_mutex_lock(movAvgConsVector->mutex);
+				vector_push_back(movAvgConsVector, &tradeItem);
+				pthread_cond_signal(movAvgConsVector->isEmpty);
+				pthread_mutex_unlock(movAvgConsVector->mutex);
+				pthread_mutex_lock(tradeLogConsVector->mutex);
+				vector_push_back(tradeLogConsVector, &tradeItem);
+				pthread_cond_signal(tradeLogConsVector->isEmpty);
+				pthread_mutex_unlock(tradeLogConsVector->mutex);
 				//printf("Time: %02d:%02d:%02d, symbol: %s, price: %.2lf, volume: %lf\n",ctimestamp.tm_hour,ctimestamp.tm_min,ctimestamp.tm_sec,Symbols[symbolID],priceItem->valuedouble, volumeItem->valuedouble);
 			}
 		}
@@ -155,14 +172,14 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 void *consumerCandle(void *q){
 	Vector *vec = (Vector*) q;
 	struct tm firstTime, lastTime;
-	trade last;
+	Trade last;
 	while(!bExit){
 		pthread_mutex_lock(vec->mutex);
 		while(vec->size == 0 && !bExit){
 			//lwsl_warn("Thread sleeping, vector empty\n");
 			pthread_cond_wait(vec->isEmpty,vec->mutex);
 		}
-		vector_pop(myVector,(trade *) &last);
+		vector_pop(candleConsVector,(Trade *) &last);
 		pthread_mutex_unlock(vec->mutex);
 		candles[last.symbolID].last = last;
 		lastTime = *localtime(&candles[last.symbolID].last.timestamp);
@@ -198,6 +215,81 @@ void *consumerCandle(void *q){
 	return NULL;
 }
 
+void* consumerMovingAverage(void* args){
+	Vector* vec = (Vector*) args;
+	Trade last;
+	while(!bExit){
+		pthread_mutex_lock(vec->mutex);
+		while(vec->size == 0 && !bExit){
+			//lwsl_warn("Thread sleeping, vector empty\n");
+			pthread_cond_wait(vec->isEmpty,vec->mutex);
+		}
+		vector_pop(movAvgConsVector,(Trade *) &last);
+		pthread_mutex_unlock(vec->mutex);
+		candles[last.symbolID].last = last;
+		struct tm lastTime = *localtime(&candles[last.symbolID].last.timestamp);
+		//printf("consumerMA thread got price %.2lf of symbol %s, time: %02d:%02d:%02d, volume: %lf\n",last.price,Symbols[last.symbolID],lastTime.tm_hour,lastTime.tm_min,lastTime.tm_sec,last.volume);
+		if ((int64_t) movAverages[last.symbolID].totalVolume == (int64_t) INIT_VOLUME_VALUE){
+			movAverages[last.symbolID].totalVolume = 0;
+			movAverages[last.symbolID].first = last;
+			movAverages[last.symbolID].averagePrice = 0;
+			movAverages[last.symbolID].tradeCount = 0;
+			printf("Moving average %s initialized!\n", Symbols[last.symbolID]);
+		}
+		else if((int64_t) difftime(last.timestamp,movAverages[last.symbolID].first.timestamp) >= 3*60){ //3 minutes passed
+			movAverages[last.symbolID].averagePrice = movAverages[last.symbolID].averagePrice/movAverages[last.symbolID].tradeCount;
+			MovingAverage finalMovingAvg = movAverages[last.symbolID];
+			printf("[3 MINUTE MA %s] total trades: %zu average price: %.2lf total volume: %.2lf\n",Symbols[last.symbolID],finalMovingAvg.tradeCount,finalMovingAvg.averagePrice,finalMovingAvg.totalVolume);
+			writeMovingAverageFile(Symbols[last.symbolID], &finalMovingAvg);
+			movAverages[last.symbolID].totalVolume = 0;
+			movAverages[last.symbolID].first = last;
+			movAverages[last.symbolID].averagePrice = 0;
+			movAverages[last.symbolID].tradeCount = 0;
+		}
+		else{
+			movAverages[last.symbolID].tradeCount++;
+			movAverages[last.symbolID].totalVolume += last.volume;
+			movAverages[last.symbolID].averagePrice += last.price;
+		}
+		//printf("%s first %02d:%02d last minute %02d:%02d\n",Symbols[last.symbolID],firstTime.tm_min,firstTime.tm_sec, lastTime.tm_min,lastTime.tm_sec);
+	}
+	return NULL;
+}
+//it's not working
+/*void *consumerTradeLogger(void *args){
+	Vector *vec = (Vector*) args;
+	Trade last;
+	while(!bExit){
+		pthread_mutex_lock(vec->mutex);
+		while(vec->size == 0 && !bExit){
+			//lwsl_warn("Thread sleeping, vector empty\n");
+			pthread_cond_wait(vec->isEmpty,vec->mutex);
+		}
+		vector_pop(movAvgConsVector,(Trade *) &last);
+		pthread_mutex_unlock(vec->mutex);
+		printf("Trade %s: Timestamp: %zu Price: %lf Volume: %lf\n", Symbols[last.symbolID],last.timestamp,last.price,last.volume);
+		writeSymbolTradesFile(Symbols[last.symbolID], &last);
+	}
+	return NULL;
+}
+
+void *test(void *arg){
+	char *command;
+	size_t len = 15;
+	while(!bExit){
+		getline(&command, &len, stdin);
+		if(strcmp(command, "LOGSTART\n") == 0){
+			//tradeLogging = true;
+			printf("enable trade log!\n");
+		}
+		else if (strcmp(command, "LOGSTOP\n") == 0){
+			//tradeLogging = false;
+			printf("disable trade log!\n");
+		}
+	}
+	return NULL;
+}*/
+
 // Main application entry
 int main(int argc, char *argv[])
 {
@@ -218,8 +310,10 @@ int main(int argc, char *argv[])
 	Symbols = readSymbolsFile(fileName, symbolCount);
 	quicksortStrings(Symbols, symbolCount);
 	candles = (Candle*) malloc(symbolCount*sizeof(Candle));
+	movAverages = (MovingAverage*) malloc(symbolCount*sizeof(MovingAverage));
 	for(size_t i = 0; i < symbolCount; ++i){
 		candles[i].totalVolume = INIT_VOLUME_VALUE; //initial dummy value
+		movAverages[i].totalVolume = INIT_VOLUME_VALUE; //initial dummy value
 	}
 	lws_set_log_level(LLL_ERR| LLL_WARN | LLL_NOTICE | LLL_INFO | LLL_USER, lwsl_emit_stderr);
 	signal(SIGINT, onSigInt); // Register the SIGINT handler
@@ -263,7 +357,10 @@ int main(int argc, char *argv[])
 	clientConnectInfo.protocol = protocols[PROTOCOL_TEST].name; // We use our test protocol
 	clientConnectInfo.pwsi = &wsiTest; // The created client should be fed inside the wsi_test variable
 	lwsl_notice("Connecting to %s://%s:%d%s \n\n", urlProtocol, clientConnectInfo.address, clientConnectInfo.port, clientConnectInfo.path);
-	myVector = vector_init(10,sizeof(trade));
+	//initialize consumer queues
+	candleConsVector = vector_init(10,sizeof(Trade));
+	movAvgConsVector = vector_init(10, sizeof(Trade));
+	tradeLogConsVector = vector_init(10, sizeof(Trade));
 	// Connect with the client info
 	lws_client_connect_via_info(&clientConnectInfo);
 	if (wsiTest == NULL)
@@ -271,25 +368,33 @@ int main(int argc, char *argv[])
 		lwsl_err("Error creating the client\n");
 		return 1;
 	}
-	pthread_t thread;
-	pthread_create(&thread,NULL,consumerCandle,myVector);
+	pthread_t candleThread,movingAverageThread,tradeLoggerThread;
+	pthread_create(&candleThread,NULL,consumerCandle,candleConsVector);
+	pthread_create(&movingAverageThread, NULL, consumerMovingAverage, movAvgConsVector);
+	//pthread_create(&tradeLoggerThread,NULL,consumerTradeLogger,tradeLogConsVector);
+	//pthread_create(&keyLogger, NULL, test, NULL);
 	// Main loop runs till bExit is true, which forces an exit of this loop
 	while (!bExit)
 	{
 		// LWS' function to run the message loop, which polls in this example every 50 milliseconds on our created context
 		lws_service(ctx, 100);
 	}
-	// Destroy the context, and wake up any threads sleeping
-	pthread_cond_signal(myVector->isEmpty);
-	pthread_join(thread,NULL);
+	// Destroy the context
+	pthread_join(candleThread,NULL);
+	pthread_join(movingAverageThread,NULL);
+	//pthread_join(tradeLoggerThread,NULL);
+	//pthread_join(keyLogger,NULL);
 	//free resources
 	lws_context_destroy(ctx);
-	vector_destroy(myVector);
+	vector_destroy(candleConsVector);
+	vector_destroy(movAvgConsVector);
+	//vector_destroy(tradeLogConsVector);
 	for(size_t i = 0; i < symbolCount; ++i){
 		free(Symbols[i]);
 	}
 	free(Symbols);
 	free(candles);
+	free(movAverages);
 	printf("Done executing.\n");
 	return 0;
 }
