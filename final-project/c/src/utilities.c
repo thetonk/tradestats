@@ -56,12 +56,6 @@ size_t searchString(char **strings, char *findStr, size_t len){
     return UINT64_MAX; //something is wrong,return an invalid value
 }
 
-int tradeCompareByTime(const void *a,const void *b){
-    const Trade *aTrade = (Trade*)a;
-    const Trade *bTrade = (Trade*)b;
-    return aTrade->timestamp - bTrade->timestamp;
-}
-
 size_t getFileLineCount(char *filename){
     FILE *file = fopen(filename, "r");
     if (file == NULL){

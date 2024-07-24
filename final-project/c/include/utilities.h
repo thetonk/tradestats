@@ -22,7 +22,6 @@ typedef struct {
 	size_t symbolID,tradeCount;
 } MovingAverage;
 
-int tradeCompareByTime(const void *a,const void *b);
 char** readSymbolsFile(char *filename, size_t linecount);
 size_t getFileLineCount(char *filename);
 void writeCandleFile(char *symbolName, Candle* candle);
