@@ -14,27 +14,30 @@
 #include "include/constants.h"
 
 static bool bExit = false;
-//static bool tradeLogging = false
+static bool tradeLogging = false;
 static size_t symbolCount;
 static Candle *candles;
 static MovingAverage* movAverages;
 static bool bDenyDeflate = true;
 static char** Symbols;
 static pthread_t keyLogger;
+static pthread_mutex_t tradeLoggerMutex;
+static pthread_cond_t tradeLoggerCondition;
 static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void *user, void* in, size_t len);
 static Vector *candleConsVector, *movAvgConsVector, *tradeLogConsVector;
 
 // Escape the loop when a SIGINT signal is received
 static void onSigInt(int sig)
 {
-	printf("caught sigint!\n");
+	printf("\ncaught sigint!\n");
 	bExit = true;
-	//pthread_cancel(keyLogger); //stop keyLogger
+	pthread_cancel(keyLogger); //stop keyLogger
 	//wake up any threads sleeping
 	pthread_cond_signal(candleConsVector->isEmpty);
 	pthread_cond_signal(movAvgConsVector->isEmpty);
 	pthread_cond_signal(tradeLogConsVector->isEmpty);
-	//tradeLogging = true;
+	pthread_cond_signal(&tradeLoggerCondition);
+	tradeLogging = true;
 }
 
 // The registered protocols
@@ -255,8 +258,8 @@ void* consumerMovingAverage(void* args){
 	}
 	return NULL;
 }
-//it's not working
-/*void *consumerTradeLogger(void *args){
+
+void *consumerTradeLogger(void *args){
 	Vector *vec = (Vector*) args;
 	Trade last;
 	while(!bExit){
@@ -265,30 +268,39 @@ void* consumerMovingAverage(void* args){
 			//lwsl_warn("Thread sleeping, vector empty\n");
 			pthread_cond_wait(vec->isEmpty,vec->mutex);
 		}
-		vector_pop(movAvgConsVector,(Trade *) &last);
-		pthread_mutex_unlock(vec->mutex);
-		printf("Trade %s: Timestamp: %zu Price: %lf Volume: %lf\n", Symbols[last.symbolID],last.timestamp,last.price,last.volume);
-		writeSymbolTradesFile(Symbols[last.symbolID], &last);
+		while(!tradeLogging){
+			pthread_mutex_unlock(vec->mutex);
+			pthread_cond_wait(&tradeLoggerCondition, &tradeLoggerMutex);
+		}
+		if (vec->size > 0){
+			vector_pop(vec,(Trade *) &last);
+			pthread_mutex_unlock(vec->mutex);
+			writeSymbolTradesFile(Symbols[last.symbolID], &last);
+		}
+		else{
+			pthread_mutex_unlock(vec->mutex);
+		}
 	}
 	return NULL;
 }
 
-void *test(void *arg){
+void *commandListener(void *arg){
 	char *command;
 	size_t len = 15;
 	while(!bExit){
 		getline(&command, &len, stdin);
 		if(strcmp(command, "LOGSTART\n") == 0){
-			//tradeLogging = true;
+			tradeLogging = true;
+			pthread_cond_signal(&tradeLoggerCondition);
 			printf("enable trade log!\n");
 		}
 		else if (strcmp(command, "LOGSTOP\n") == 0){
-			//tradeLogging = false;
+			tradeLogging = false;
 			printf("disable trade log!\n");
 		}
 	}
 	return NULL;
-}*/
+}
 
 // Main application entry
 int main(int argc, char *argv[])
@@ -371,8 +383,10 @@ int main(int argc, char *argv[])
 	pthread_t candleThread,movingAverageThread,tradeLoggerThread;
 	pthread_create(&candleThread,NULL,consumerCandle,candleConsVector);
 	pthread_create(&movingAverageThread, NULL, consumerMovingAverage, movAvgConsVector);
-	//pthread_create(&tradeLoggerThread,NULL,consumerTradeLogger,tradeLogConsVector);
-	//pthread_create(&keyLogger, NULL, test, NULL);
+	pthread_create(&tradeLoggerThread,NULL,consumerTradeLogger,tradeLogConsVector);
+	pthread_mutex_init(&tradeLoggerMutex, NULL);
+	pthread_cond_init(&tradeLoggerCondition, NULL);
+	pthread_create(&keyLogger, NULL, commandListener, NULL);
 	// Main loop runs till bExit is true, which forces an exit of this loop
 	while (!bExit)
 	{
@@ -382,13 +396,15 @@ int main(int argc, char *argv[])
 	// Destroy the context
 	pthread_join(candleThread,NULL);
 	pthread_join(movingAverageThread,NULL);
-	//pthread_join(tradeLoggerThread,NULL);
-	//pthread_join(keyLogger,NULL);
+	pthread_join(tradeLoggerThread,NULL);
+	pthread_cond_destroy(&tradeLoggerCondition);
+	pthread_mutex_destroy(&tradeLoggerMutex);
+	pthread_join(keyLogger,NULL);
 	//free resources
 	lws_context_destroy(ctx);
 	vector_destroy(candleConsVector);
 	vector_destroy(movAvgConsVector);
-	//vector_destroy(tradeLogConsVector);
+	vector_destroy(tradeLogConsVector);
 	for(size_t i = 0; i < symbolCount; ++i){
 		free(Symbols[i]);
 	}
