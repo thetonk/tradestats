@@ -8,6 +8,7 @@
 #include <pthread.h>
 #include <time.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #include "include/cJSON.h"
 #include "include/utilities.h"
 #include "include/vector.h"
@@ -16,8 +17,8 @@
 static bool bExit = false;
 static bool tradeLogging = false;
 static size_t symbolCount;
-static Candle *candles;
-static MovingAverage* movAverages;
+static Candle *candles, *prev_candles;
+static MovingAverage* movAverages, *prev_movAverages;
 static bool bDenyDeflate = true;
 static char** Symbols;
 static pthread_t keyLogger;
@@ -29,7 +30,7 @@ static Vector *candleConsVector, *movAvgConsVector, *tradeLogConsVector;
 // Escape the loop when a SIGINT signal is received
 static void onSigInt(int sig)
 {
-	printf("\ncaught sigint!\n");
+	printf("Caught SIGINT! Exiting!\n");
 	bExit = true;
 	pthread_cancel(keyLogger); //stop keyLogger
 	//wake up any threads sleeping
@@ -112,7 +113,7 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 				symbolID = searchString(Symbols, symbolItem->valuestring, symbolCount);
 				tradeItem.symbolID = symbolID;
 				tradeItem.price = priceItem->valuedouble;
-				tradeItem.timestamp = timeItem->valuedouble/1000;
+				tradeItem.timestamp = (uint64_t) timeItem->valuedouble / 1000;
 				ctimestamp = *localtime(&tradeItem.timestamp);
 				tradeItem.volume = volumeItem->valuedouble;
 				pthread_mutex_lock(candleConsVector->mutex);
@@ -174,7 +175,7 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 
 void *consumerCandle(void *q){
 	Vector *vec = (Vector*) q;
-	struct tm firstTime, lastTime;
+	struct tm firstTime, lastTime,currentTime;
 	Trade last;
 	while(!bExit){
 		pthread_mutex_lock(vec->mutex);
@@ -187,31 +188,55 @@ void *consumerCandle(void *q){
 		candles[last.symbolID].last = last;
 		lastTime = *localtime(&candles[last.symbolID].last.timestamp);
 		firstTime = *localtime(&(candles[last.symbolID].first.timestamp));
+		time_t currentTimestamp = time(NULL);
+		currentTime = *localtime(&currentTimestamp);
 		//printf("consumerCandle thread got price %.2lf of symbol %s, time: %02d:%02d:%02d, volume: %lf\n",last.price,Symbols[last.symbolID],lastTime.tm_hour,lastTime.tm_min,lastTime.tm_sec,last.volume);
 		if ((int64_t) candles[last.symbolID].totalVolume == (int64_t) INIT_VOLUME_VALUE){
-			candles[last.symbolID].totalVolume = 0;
+			candles[last.symbolID].totalVolume = last.volume;
 			candles[last.symbolID].first = last;
 			candles[last.symbolID].min = last;
 			candles[last.symbolID].max = last;
-			printf("candle %s initialized!\n", Symbols[last.symbolID]);
+			//printf("candle %s initialized!\n", Symbols[last.symbolID]);
 		}
-		else if(firstTime.tm_min < lastTime.tm_min){
-			Candle finalCandle = candles[last.symbolID];
-			printf("[LAST MINUTE CANDLE %s] max: %.2lf min: %.2lf first: %.2lf, last %.2lf total volume: %.2lf\n",Symbols[last.symbolID],finalCandle.max.price,finalCandle.min.price,finalCandle.first.price,finalCandle.last.price,finalCandle.totalVolume);
-			writeCandleFile(Symbols[last.symbolID], &finalCandle);
-			candles[last.symbolID].totalVolume = 0;
+		else if(firstTime.tm_min == lastTime.tm_min -1 || (firstTime.tm_min == 59 && lastTime.tm_min == 0)){
+			printf("FINAL CANDLE for %s initialized! Start time: %02d:%02d:%02d -> %02d:%02d:%02d\n", Symbols[last.symbolID],firstTime.tm_hour,firstTime.tm_min,firstTime.tm_sec,
+                       lastTime.tm_hour,lastTime.tm_min,lastTime.tm_sec);
+			prev_candles[last.symbolID] = candles[last.symbolID];
+			candles[last.symbolID].totalVolume = last.volume;
 			candles[last.symbolID].first = last;
 			candles[last.symbolID].min = last;
 			candles[last.symbolID].max = last;
 		}
 		else{
-			if(last.price < candles[last.symbolID].min.price){
-				candles[last.symbolID].min = last;
+			if(firstTime.tm_min > lastTime.tm_min && !(firstTime.tm_min == 59 && lastTime.tm_min == 0)){
+				prev_candles[last.symbolID].last = last;
+				if((int64_t) prev_candles[last.symbolID].totalVolume == (int64_t) INIT_VOLUME_VALUE){
+					printf("Retarded symbol initialization %s\n",Symbols[last.symbolID]);
+					prev_candles[last.symbolID].totalVolume = last.volume;
+					prev_candles[last.symbolID].first = last;
+					prev_candles[last.symbolID].min = last;
+					prev_candles[last.symbolID].max = last;
+				}
+				else{
+					//printf("An older trade arrived late of symbol %s!\n",Symbols[last.symbolID]);
+					if(last.price < prev_candles[last.symbolID].min.price){
+						prev_candles[last.symbolID].min = last;
+					}
+					if(last.price > prev_candles[last.symbolID].max.price){
+						prev_candles[last.symbolID].max = last;
+					}
+					prev_candles[last.symbolID].totalVolume += last.volume;
+				}
 			}
-			if(last.price > candles[last.symbolID].max.price){
-				candles[last.symbolID].max = last;
+			else{
+				if(last.price < candles[last.symbolID].min.price){
+					candles[last.symbolID].min = last;
+				}
+				if(last.price > candles[last.symbolID].max.price){
+					candles[last.symbolID].max = last;
+				}
+				candles[last.symbolID].totalVolume += last.volume;
 			}
-			candles[last.symbolID].totalVolume += last.volume;
 		}
 		//printf("%s first %02d:%02d last minute %02d:%02d\n",Symbols[last.symbolID],firstTime.tm_min,firstTime.tm_sec, lastTime.tm_min,lastTime.tm_sec);
 	}
@@ -220,6 +245,7 @@ void *consumerCandle(void *q){
 
 void* consumerMovingAverage(void* args){
 	Vector* vec = (Vector*) args;
+	struct tm firstTime, lastTime;
 	Trade last;
 	while(!bExit){
 		pthread_mutex_lock(vec->mutex);
@@ -229,30 +255,45 @@ void* consumerMovingAverage(void* args){
 		}
 		vector_pop(movAvgConsVector,(Trade *) &last);
 		pthread_mutex_unlock(vec->mutex);
-		candles[last.symbolID].last = last;
-		struct tm lastTime = *localtime(&candles[last.symbolID].last.timestamp);
+		lastTime = *localtime(&last.timestamp);
+		firstTime = *localtime(&movAverages[last.symbolID].first.timestamp);
 		//printf("consumerMA thread got price %.2lf of symbol %s, time: %02d:%02d:%02d, volume: %lf\n",last.price,Symbols[last.symbolID],lastTime.tm_hour,lastTime.tm_min,lastTime.tm_sec,last.volume);
+		//printf("difftime: %ld\n",(int64_t)difftime(last.timestamp,movAverages[last.symbolID].first.timestamp) );
 		if ((int64_t) movAverages[last.symbolID].totalVolume == (int64_t) INIT_VOLUME_VALUE){
-			movAverages[last.symbolID].totalVolume = 0;
+			movAverages[last.symbolID].totalVolume = last.volume;
 			movAverages[last.symbolID].first = last;
-			movAverages[last.symbolID].averagePrice = 0;
-			movAverages[last.symbolID].tradeCount = 0;
-			printf("Moving average %s initialized!\n", Symbols[last.symbolID]);
+			movAverages[last.symbolID].averagePrice = last.price;
+			movAverages[last.symbolID].tradeCount = 1;
+			//printf("Moving average %s initialized!\n", Symbols[last.symbolID]);
 		}
-		else if((int64_t) difftime(last.timestamp,movAverages[last.symbolID].first.timestamp) >= 3*60){ //3 minutes passed
-			movAverages[last.symbolID].averagePrice = movAverages[last.symbolID].averagePrice/movAverages[last.symbolID].tradeCount;
-			MovingAverage finalMovingAvg = movAverages[last.symbolID];
-			printf("[3 MINUTE MA %s] total trades: %zu average price: %.2lf total volume: %.2lf\n",Symbols[last.symbolID],finalMovingAvg.tradeCount,finalMovingAvg.averagePrice,finalMovingAvg.totalVolume);
-			writeMovingAverageFile(Symbols[last.symbolID], &finalMovingAvg);
-			movAverages[last.symbolID].totalVolume = 0;
+		else if((int64_t) difftime(last.timestamp,movAverages[last.symbolID].first.timestamp) >= MOVING_AVERAGE_INTERVAL_MINUTES*60){ //3 minutes passed
+			printf("%s %d FINAL MA triggered! Start time: %02d:%02d:%02d -> %02d:%02d:%02d\n",Symbols[last.symbolID],MOVING_AVERAGE_INTERVAL_MINUTES,
+                     firstTime.tm_hour,firstTime.tm_min,firstTime.tm_sec,lastTime.tm_hour,lastTime.tm_min,lastTime.tm_sec);
+			prev_movAverages[last.symbolID] = movAverages[last.symbolID];
+			movAverages[last.symbolID].totalVolume = last.volume;
 			movAverages[last.symbolID].first = last;
-			movAverages[last.symbolID].averagePrice = 0;
-			movAverages[last.symbolID].tradeCount = 0;
+			movAverages[last.symbolID].averagePrice = last.price;
+			movAverages[last.symbolID].tradeCount = 1;
 		}
 		else{
-			movAverages[last.symbolID].tradeCount++;
-			movAverages[last.symbolID].totalVolume += last.volume;
-			movAverages[last.symbolID].averagePrice += last.price;
+			if(firstTime.tm_min > lastTime.tm_min && !(firstTime.tm_min == 59 && lastTime.tm_min == 0)){
+				if(prev_movAverages[last.symbolID].totalVolume == INIT_VOLUME_VALUE){
+					prev_movAverages[last.symbolID].first = last;
+					prev_movAverages[last.symbolID].averagePrice = last.price;
+					prev_movAverages[last.symbolID].totalVolume = last.volume;
+					prev_movAverages[last.symbolID].tradeCount = 1;
+				}
+				else{
+					prev_movAverages[last.symbolID].tradeCount++;
+					prev_movAverages[last.symbolID].averagePrice += last.price;
+					prev_movAverages[last.symbolID].totalVolume += last.volume;
+				}
+			}
+			else{
+				movAverages[last.symbolID].tradeCount++;
+				movAverages[last.symbolID].totalVolume += last.volume;
+				movAverages[last.symbolID].averagePrice += last.price;
+			}
 		}
 		//printf("%s first %02d:%02d last minute %02d:%02d\n",Symbols[last.symbolID],firstTime.tm_min,firstTime.tm_sec, lastTime.tm_min,lastTime.tm_sec);
 	}
@@ -302,6 +343,48 @@ void *commandListener(void *arg){
 	return NULL;
 }
 
+void *ticker(void *arg){
+	time_t firstTime, lastTime;
+	struct tm firstDate,lastDate;
+	//size_t minuteCounter = 0;
+	time(&lastTime);
+	firstTime = lastTime;
+	firstDate = *localtime(&firstTime);
+	while(!bExit){
+		time(&lastTime);
+		lastDate = *localtime(&lastTime);
+		if((lastDate.tm_min > firstDate.tm_min || (lastDate.tm_min == 0 && firstDate.tm_min == 59)) && lastDate.tm_sec == 15){ //give a grace period of 15 seconds for late trades
+			printf("[TICKER] tick! Grace time for candle generation is over!\n");
+			firstTime = lastTime;
+			firstDate = lastDate;
+			//minuteCounter++;
+			//save candlesticks to files
+			for(size_t i = 0; i < symbolCount; ++i){
+				if((int64_t) prev_candles[i].totalVolume != (int64_t) INIT_VOLUME_VALUE){
+					//printf("[LAST MINUTE CANDLE %s] max: %.2lf min: %.2lf first: %.2lf, last %.2lf total volume: %.2lf\n",Symbols[i],prev_candles[i].max.price,prev_candles[i].min.price,
+					//   prev_candles[i].first.price,prev_candles[i].last.price,prev_candles[i].totalVolume);
+					writeCandleFile(Symbols[i], &prev_candles[i]);
+					prev_candles[i].totalVolume = INIT_VOLUME_VALUE;
+				}
+				else{
+					printf("No candle data for symbol %s! Writing old data\n",Symbols[i]);
+					writeCandleFile(Symbols[i], &candles[i]);
+					candles[i].totalVolume = INIT_VOLUME_VALUE;
+				}
+				if((int64_t) prev_movAverages[i].totalVolume != (int64_t) INIT_VOLUME_VALUE){
+					prev_movAverages[i].averagePrice = prev_movAverages[i].averagePrice/prev_movAverages[i].tradeCount;
+					//printf("[%d MINUTE MA %s] total trades: %zu average price: %.2lf total volume: %.2lf\n",MOVING_AVERAGE_INTERVAL_MINUTES,Symbols[i],
+					//	   prev_movAverages[i].tradeCount,prev_movAverages[i].averagePrice,prev_movAverages[i].totalVolume);
+					writeMovingAverageFile(Symbols[i], &prev_movAverages[i]);
+					prev_movAverages[i].totalVolume = INIT_VOLUME_VALUE;
+				}
+			}
+		}
+		sleep(1);
+	}
+	return NULL;
+}
+
 // Main application entry
 int main(int argc, char *argv[])
 {
@@ -321,12 +404,10 @@ int main(int argc, char *argv[])
 	printf("Found %zu symbols!\n", symbolCount);
 	Symbols = readSymbolsFile(fileName, symbolCount);
 	quicksortStrings(Symbols, symbolCount);
-	candles = (Candle*) malloc(symbolCount*sizeof(Candle));
-	movAverages = (MovingAverage*) malloc(symbolCount*sizeof(MovingAverage));
-	for(size_t i = 0; i < symbolCount; ++i){
-		candles[i].totalVolume = INIT_VOLUME_VALUE; //initial dummy value
-		movAverages[i].totalVolume = INIT_VOLUME_VALUE; //initial dummy value
-	}
+	candles = init_candle(symbolCount);
+	prev_candles = init_candle(symbolCount);
+	movAverages = init_movAvg(symbolCount);
+	prev_movAverages = init_movAvg(symbolCount);
 	lws_set_log_level(LLL_ERR| LLL_WARN | LLL_NOTICE | LLL_INFO | LLL_USER, lwsl_emit_stderr);
 	signal(SIGINT, onSigInt); // Register the SIGINT handler
 	// Connection info
@@ -380,13 +461,14 @@ int main(int argc, char *argv[])
 		lwsl_err("Error creating the client\n");
 		return 1;
 	}
-	pthread_t candleThread,movingAverageThread,tradeLoggerThread;
+	pthread_t candleThread,movingAverageThread,tradeLoggerThread,tickerThread;
 	pthread_create(&candleThread,NULL,consumerCandle,candleConsVector);
 	pthread_create(&movingAverageThread, NULL, consumerMovingAverage, movAvgConsVector);
 	pthread_create(&tradeLoggerThread,NULL,consumerTradeLogger,tradeLogConsVector);
 	pthread_mutex_init(&tradeLoggerMutex, NULL);
 	pthread_cond_init(&tradeLoggerCondition, NULL);
 	pthread_create(&keyLogger, NULL, commandListener, NULL);
+	pthread_create(&tickerThread, NULL, ticker, NULL);
 	// Main loop runs till bExit is true, which forces an exit of this loop
 	while (!bExit)
 	{
@@ -400,6 +482,7 @@ int main(int argc, char *argv[])
 	pthread_cond_destroy(&tradeLoggerCondition);
 	pthread_mutex_destroy(&tradeLoggerMutex);
 	pthread_join(keyLogger,NULL);
+	pthread_join(tickerThread, NULL);
 	//free resources
 	lws_context_destroy(ctx);
 	vector_destroy(candleConsVector);
@@ -409,8 +492,10 @@ int main(int argc, char *argv[])
 		free(Symbols[i]);
 	}
 	free(Symbols);
-	free(candles);
-	free(movAverages);
+	destroy_candle(candles);
+	destroy_candle(prev_candles);
+	destroy_movAvg(movAverages);
+	destroy_movAvg(prev_movAverages);
 	printf("Done executing.\n");
 	return 0;
 }

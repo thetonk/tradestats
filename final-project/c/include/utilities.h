@@ -22,6 +22,10 @@ typedef struct {
 	size_t symbolID,tradeCount;
 } MovingAverage;
 
+Candle* init_candle(size_t size);
+void destroy_candle(Candle *candle);
+MovingAverage *init_movAvg(size_t size);
+void destroy_movAvg(MovingAverage* ma);
 char** readSymbolsFile(char *filename, size_t linecount);
 size_t getFileLineCount(char *filename);
 void writeCandleFile(char *symbolName, Candle* candle);

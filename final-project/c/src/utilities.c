@@ -8,6 +8,31 @@
 #include <sys/stat.h>
 #include <limits.h>
 #include <stdio.h>
+#include <time.h>
+
+Candle* init_candle(size_t size){
+    Candle* candle = malloc(size*sizeof(Candle));
+    for(size_t i = 0; i < size; ++i){
+        candle[i].totalVolume = INIT_VOLUME_VALUE;
+    }
+    return candle;
+}
+
+void destroy_candle(Candle *candle){
+    free(candle);
+}
+
+MovingAverage* init_movAvg(size_t size){
+    MovingAverage* ma = malloc(size*sizeof(MovingAverage));
+    for(size_t i = 0; i< size; ++i){
+        ma[i].totalVolume = INIT_VOLUME_VALUE;
+    }
+    return ma;
+}
+
+void destroy_movAvg(MovingAverage *ma){
+    free(ma);
+}
 
 void swapStrings(char **str1, char **str2)
 {
@@ -139,6 +164,7 @@ void writeSymbolTradesFile(char *symbolName, Trade *trade){
     char folderPath[PATH_MAX];
     snprintf(folderPath,PATH_MAX, "%s/tradeLogs",OUTPUT_DIRECTORY);
     const size_t filenameLength = strlen(folderPath)+SYMBOL_LENGTH+strlen("_trades.csv");
+    struct tm timedate = *localtime(&trade->timestamp);
     char filename[filenameLength];
     mkdir(folderPath, 0755);
     size_t bytes = snprintf(filename,filenameLength,"%s/%s_trades.csv",folderPath,symbolName);
@@ -152,6 +178,6 @@ void writeSymbolTradesFile(char *symbolName, Trade *trade){
     if(fileRequiresHeader){
         fputs("Symbol,Timestamp,Price,Volume\n", fp);
     }
-    fprintf(fp,"%s,%zu,%lf,%lf\n",symbolName,trade->timestamp,trade->price,trade->volume);
+    fprintf(fp,"%s,%02d:%02d:%02d,%lf,%lf\n",symbolName,timedate.tm_hour,timedate.tm_min,timedate.tm_sec,trade->price,trade->volume);
     fclose(fp);
 }
