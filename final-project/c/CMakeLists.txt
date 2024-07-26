@@ -9,6 +9,8 @@ set(CMAKE_C_COMPILER gcc)
 if(CMAKE_TOOLCHAIN_FILE)
   include(${CMAKE_TOOLCHAIN_FILE})
 endif()
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON) #useful if using clangd
 message("Using compiler ${CMAKE_C_COMPILER}")
 add_subdirectory("${PROJECT_SOURCE_DIR}/src")
 add_executable(main "${PROJECT_SOURCE_DIR}/main.c")
