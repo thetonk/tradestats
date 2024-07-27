@@ -12,6 +12,7 @@
 #include "include/cJSON.h"
 #include "include/utilities.h"
 #include "include/vector.h"
+#include "include/queue.h"
 #include "include/constants.h"
 
 static bool bExit = false;
@@ -247,6 +248,18 @@ void *consumerCandle(void *q){
 
 void* consumerMovingAverage(void* args){
 	Vector* vec = (Vector*) args;
+	Queue** totalTradesPerMinute = (Queue**) malloc(symbolCount*sizeof(Queue*));
+	Queue** totalPricePerMinute = (Queue**) malloc(symbolCount*sizeof(Queue*));
+	Queue** timestampsPerMinute = (Queue**) malloc(symbolCount*sizeof(Queue*));
+	size_t* totalTrades = (size_t*) malloc(symbolCount*sizeof(size_t));
+	double* totalPrices = (double*) malloc(symbolCount*sizeof(double));
+	memset(totalPrices, 0, symbolCount*sizeof(double));
+	memset(totalTrades,0,symbolCount*sizeof(totalTrades));
+	for(size_t i = 0; i < symbolCount;++i){
+		totalPricePerMinute[i] = queue_init(MOVING_AVERAGE_INTERVAL_MINUTES, sizeof(double));
+		totalTradesPerMinute[i] = queue_init(MOVING_AVERAGE_INTERVAL_MINUTES, sizeof(size_t));
+		timestampsPerMinute[i] = queue_init(MOVING_AVERAGE_INTERVAL_MINUTES, sizeof(time_t));
+	}
 	struct tm firstTime, lastTime;
 	Trade last;
 	while(!bExit){
@@ -265,15 +278,36 @@ void* consumerMovingAverage(void* args){
 			movAverages[last.symbolID].averagePrice = last.price;
 			movAverages[last.symbolID].tradeCount = 1;
 		}
-		else if((int64_t) difftime(last.timestamp,movAverages[last.symbolID].first.timestamp) >= MOVING_AVERAGE_INTERVAL_MINUTES*60){ //3 minutes passed
-			printf(MA_LOG_COLOR"%s %d FINAL MA triggered! Start time: %02d:%02d:%02d -> %02d:%02d:%02d\n"ANSI_RESET,Symbols[last.symbolID],MOVING_AVERAGE_INTERVAL_MINUTES,
-                     firstTime.tm_hour,firstTime.tm_min,firstTime.tm_sec,lastTime.tm_hour,lastTime.tm_min,lastTime.tm_sec);
+		else if(firstTime.tm_min == lastTime.tm_min -1 || (firstTime.tm_min == 59 && lastTime.tm_min == 0)){ //3 minutes passed
+			totalPrices[last.symbolID] += movAverages[last.symbolID].averagePrice;
+			totalTrades[last.symbolID] += movAverages[last.symbolID].tradeCount;
+			if(totalPricePerMinute[last.symbolID]->isFull){
+				size_t oldestTotalTrades;
+				double oldestTotalPrice;
+				//remove oldest value
+				queue_pop(totalPricePerMinute[last.symbolID], &oldestTotalPrice);
+				queue_pop(totalTradesPerMinute[last.symbolID], &oldestTotalTrades);
+				//remove oldest values from MA calculation
+				movAverages[last.symbolID].averagePrice -= oldestTotalPrice;
+				movAverages[last.symbolID].tradeCount -= oldestTotalTrades;
+			}
+			queue_insert(totalTradesPerMinute[last.symbolID], &movAverages[last.symbolID].tradeCount);
+			queue_insert(totalPricePerMinute[last.symbolID], &movAverages[last.symbolID].averagePrice);
+			queue_insert(timestampsPerMinute[last.symbolID], &movAverages[last.symbolID].first.timestamp);
 			pthread_mutex_lock(&movAvgMutex);
-			prev_movAverages[last.symbolID] = movAverages[last.symbolID];
-			movAverages[last.symbolID].totalVolume = last.volume;
+			if(totalPricePerMinute[last.symbolID]->isFull){
+				queue_pop(timestampsPerMinute[last.symbolID],(time_t*) &movAverages[last.symbolID].first.timestamp);
+				firstTime = *localtime(&movAverages[last.symbolID].first.timestamp);
+				printf(MA_LOG_COLOR"%s %d FINAL MA triggered! Start time: %02d:%02d:%02d -> %02d:%02d:%02d\n"ANSI_RESET,Symbols[last.symbolID],MOVING_AVERAGE_INTERVAL_MINUTES,
+                     firstTime.tm_hour,firstTime.tm_min,firstTime.tm_sec,lastTime.tm_hour,lastTime.tm_min,lastTime.tm_sec);
+				movAverages[last.symbolID].tradeCount = totalTrades[last.symbolID];
+				movAverages[last.symbolID].averagePrice = totalPrices[last.symbolID];
+				prev_movAverages[last.symbolID] = movAverages[last.symbolID];
+			}
 			movAverages[last.symbolID].first = last;
-			movAverages[last.symbolID].averagePrice = last.price;
 			movAverages[last.symbolID].tradeCount = 1;
+			movAverages[last.symbolID].totalVolume = last.volume;
+			movAverages[last.symbolID].averagePrice = last.price;
 			pthread_mutex_unlock(&movAvgMutex);
 		}
 		else{
@@ -300,6 +334,16 @@ void* consumerMovingAverage(void* args){
 		}
 		//printf("%s first %02d:%02d last minute %02d:%02d\n",Symbols[last.symbolID],firstTime.tm_min,firstTime.tm_sec, lastTime.tm_min,lastTime.tm_sec);
 	}
+	for(size_t i = 0; i < symbolCount;++i){
+		queue_destroy(totalPricePerMinute[i]);
+		queue_destroy(totalTradesPerMinute[i]);
+		queue_destroy(timestampsPerMinute[i]);
+	}
+	free(totalTradesPerMinute);
+	free(totalPricePerMinute);
+	free(timestampsPerMinute);
+	free(totalTrades);
+	free(totalPrices);
 	return NULL;
 }
 
@@ -309,7 +353,6 @@ void *consumerTradeLogger(void *args){
 	while(!bExit){
 		pthread_mutex_lock(vec->mutex);
 		while(vec->size == 0 && !bExit){
-			//lwsl_warn("Thread sleeping, vector empty\n");
 			pthread_cond_wait(vec->isEmpty,vec->mutex);
 		}
 		while(!tradeLogging){
@@ -384,7 +427,7 @@ void *ticker(void *arg){
 				pthread_mutex_unlock(&candleMutex);
 				pthread_mutex_lock(&movAvgMutex);
 				if((int64_t) prev_movAverages[i].totalVolume != (int64_t) INIT_VOLUME_VALUE){
-					prev_movAverages[i].averagePrice = prev_movAverages[i].averagePrice/prev_movAverages[i].tradeCount;
+					prev_movAverages[i].averagePrice = prev_movAverages[i].averagePrice / prev_movAverages[i].tradeCount;
 					//printf("[%d MINUTE MA %s] total trades: %zu average price: %.2lf total volume: %.2lf\n",MOVING_AVERAGE_INTERVAL_MINUTES,Symbols[i],
 					//	   prev_movAverages[i].tradeCount,prev_movAverages[i].averagePrice,prev_movAverages[i].totalVolume);
 					writeMovingAverageFile(Symbols[i], &prev_movAverages[i]);
