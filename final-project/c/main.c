@@ -77,6 +77,7 @@ enum protocolList {
 // Callback for the test protocol
 static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void *user, void* in, size_t len)
 {
+	char sending_message[SUBSCRIBE_MESSAGE_LENGTH];
 	// For which reason was this callback called?
 	switch (reason)
 	{
@@ -106,7 +107,6 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 			cJSON_ArrayForEach(item, data){
 				cJSON *priceItem, *timeItem, *volumeItem, *symbolItem;
 				Trade tradeItem;
-				struct tm ctimestamp;
 				timeItem = cJSON_GetObjectItem(item, "t");
 				priceItem = cJSON_GetObjectItem(item, "p");
 				volumeItem = cJSON_GetObjectItem(item, "v");
@@ -115,7 +115,6 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 				tradeItem.symbolID = symbolID;
 				tradeItem.price = priceItem->valuedouble;
 				tradeItem.timestamp = (uint64_t) timeItem->valuedouble / 1000;
-				ctimestamp = *localtime(&tradeItem.timestamp);
 				tradeItem.volume = volumeItem->valuedouble;
 				pthread_mutex_lock(candleConsVector->mutex);
 				vector_push_back(candleConsVector, &tradeItem);
@@ -148,12 +147,12 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 	// The connection was successfully established
 	case LWS_CALLBACK_CLIENT_ESTABLISHED:
 		lwsl_info("[Test Protocol] Connection to server established.\n");
-		char msg[SUBSCRIBE_MESSAGE_LENGTH];
+		//char msg[SUBSCRIBE_MESSAGE_LENGTH];
 		for(size_t i = 0; i < symbolCount;++i){
-			memset(msg, 0, SUBSCRIBE_MESSAGE_LENGTH);
-			snprintf(msg, SUBSCRIBE_MESSAGE_LENGTH,"{\"type\":\"subscribe\", \"symbol\":\"%s\"}",Symbols[i]);
-			lwsl_info("[Test Protocol] Writing \"%s\" to server.\n", msg);
-			lws_write(wsi, (unsigned char*)msg, strlen(msg), LWS_WRITE_TEXT);
+			memset(sending_message, 0, SUBSCRIBE_MESSAGE_LENGTH);
+			snprintf(sending_message, SUBSCRIBE_MESSAGE_LENGTH,"{\"type\":\"subscribe\", \"symbol\":\"%s\"}",Symbols[i]);
+			lwsl_info("[Test Protocol] Writing \"%s\" to server.\n", sending_message);
+			lws_write(wsi, (unsigned char*)sending_message, strlen(sending_message), LWS_WRITE_TEXT);
 		}
 		break;
 
@@ -251,14 +250,18 @@ void* consumerMovingAverage(void* args){
 	Queue** totalTradesPerMinute = (Queue**) malloc(symbolCount*sizeof(Queue*));
 	Queue** totalPricePerMinute = (Queue**) malloc(symbolCount*sizeof(Queue*));
 	Queue** timestampsPerMinute = (Queue**) malloc(symbolCount*sizeof(Queue*));
+	Queue** totalVolumePerMinute = (Queue**) malloc(symbolCount*sizeof(Queue*));
 	size_t* totalTrades = (size_t*) malloc(symbolCount*sizeof(size_t));
 	double* totalPrices = (double*) malloc(symbolCount*sizeof(double));
+	double* totalVolumes = (double*) malloc(symbolCount*sizeof(double));
 	memset(totalPrices, 0, symbolCount*sizeof(double));
-	memset(totalTrades,0,symbolCount*sizeof(totalTrades));
+	memset(totalTrades,0,symbolCount*sizeof(size_t));
+	memset(totalVolumes,0,symbolCount*sizeof(double));
 	for(size_t i = 0; i < symbolCount;++i){
 		totalPricePerMinute[i] = queue_init(MOVING_AVERAGE_INTERVAL_MINUTES, sizeof(double));
 		totalTradesPerMinute[i] = queue_init(MOVING_AVERAGE_INTERVAL_MINUTES, sizeof(size_t));
 		timestampsPerMinute[i] = queue_init(MOVING_AVERAGE_INTERVAL_MINUTES, sizeof(time_t));
+		totalVolumePerMinute[i] = queue_init(MOVING_AVERAGE_INTERVAL_MINUTES, sizeof(double));
 	}
 	struct tm firstTime, lastTime;
 	Trade last;
@@ -278,30 +281,37 @@ void* consumerMovingAverage(void* args){
 			movAverages[last.symbolID].averagePrice = last.price;
 			movAverages[last.symbolID].tradeCount = 1;
 		}
-		else if(firstTime.tm_min == lastTime.tm_min -1 || (firstTime.tm_min == 59 && lastTime.tm_min == 0)){ //3 minutes passed
+		else if(firstTime.tm_min == lastTime.tm_min -1 || (firstTime.tm_min == 59 && lastTime.tm_min == 0)){
 			totalPrices[last.symbolID] += movAverages[last.symbolID].averagePrice;
 			totalTrades[last.symbolID] += movAverages[last.symbolID].tradeCount;
+			totalVolumes[last.symbolID] += movAverages[last.symbolID].totalVolume;
 			if(totalPricePerMinute[last.symbolID]->isFull){
 				size_t oldestTotalTrades;
-				double oldestTotalPrice;
+				double oldestTotalPrice, oldestTotalVolume;
+				time_t oldestTimestamp;
 				//remove oldest value
 				queue_pop(totalPricePerMinute[last.symbolID], &oldestTotalPrice);
 				queue_pop(totalTradesPerMinute[last.symbolID], &oldestTotalTrades);
+				queue_pop(totalVolumePerMinute[last.symbolID], &oldestTotalVolume);
+				queue_pop(timestampsPerMinute[last.symbolID], &oldestTimestamp); //discard oldest timestamp, as it's no needed anymore
 				//remove oldest values from MA calculation
-				movAverages[last.symbolID].averagePrice -= oldestTotalPrice;
-				movAverages[last.symbolID].tradeCount -= oldestTotalTrades;
+				totalPrices[last.symbolID] -= oldestTotalPrice;
+				totalTrades[last.symbolID] -= oldestTotalTrades;
+				totalVolumes[last.symbolID] -= oldestTotalVolume;
 			}
 			queue_insert(totalTradesPerMinute[last.symbolID], &movAverages[last.symbolID].tradeCount);
 			queue_insert(totalPricePerMinute[last.symbolID], &movAverages[last.symbolID].averagePrice);
 			queue_insert(timestampsPerMinute[last.symbolID], &movAverages[last.symbolID].first.timestamp);
+			queue_insert(totalVolumePerMinute[last.symbolID], &movAverages[last.symbolID].totalVolume);
 			pthread_mutex_lock(&movAvgMutex);
 			if(totalPricePerMinute[last.symbolID]->isFull){
-				queue_pop(timestampsPerMinute[last.symbolID],(time_t*) &movAverages[last.symbolID].first.timestamp);
+				queue_peek_head(timestampsPerMinute[last.symbolID],(time_t*) &movAverages[last.symbolID].first.timestamp);
 				firstTime = *localtime(&movAverages[last.symbolID].first.timestamp);
 				printf(MA_LOG_COLOR"%s %d FINAL MA triggered! Start time: %02d:%02d:%02d -> %02d:%02d:%02d\n"ANSI_RESET,Symbols[last.symbolID],MOVING_AVERAGE_INTERVAL_MINUTES,
                      firstTime.tm_hour,firstTime.tm_min,firstTime.tm_sec,lastTime.tm_hour,lastTime.tm_min,lastTime.tm_sec);
 				movAverages[last.symbolID].tradeCount = totalTrades[last.symbolID];
 				movAverages[last.symbolID].averagePrice = totalPrices[last.symbolID];
+				movAverages[last.symbolID].totalVolume = totalVolumes[last.symbolID];
 				prev_movAverages[last.symbolID] = movAverages[last.symbolID];
 			}
 			movAverages[last.symbolID].first = last;
@@ -338,12 +348,15 @@ void* consumerMovingAverage(void* args){
 		queue_destroy(totalPricePerMinute[i]);
 		queue_destroy(totalTradesPerMinute[i]);
 		queue_destroy(timestampsPerMinute[i]);
+		queue_destroy(totalVolumePerMinute[i]);
 	}
 	free(totalTradesPerMinute);
 	free(totalPricePerMinute);
 	free(timestampsPerMinute);
+	free(totalVolumePerMinute);
 	free(totalTrades);
 	free(totalPrices);
+	free(totalVolumes);
 	return NULL;
 }
 
@@ -415,7 +428,7 @@ void *ticker(void *arg){
 				}
 				else{
 					struct tm candleFirstDate = *localtime(&candles[i].first.timestamp);
-					if(candleFirstDate.tm_min == lastDate.tm_min - 1){
+					if(candles[i].totalVolume != INIT_VOLUME_VALUE && candleFirstDate.tm_min == lastDate.tm_min - 1){
 						printf(TICKER_LOG_COLOR"Older candle data for symbol %s can be used!\n"ANSI_RESET,Symbols[i]);
 						writeCandleFile(Symbols[i], &candles[i]);
 						candles[i].totalVolume = INIT_VOLUME_VALUE;

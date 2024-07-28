@@ -22,6 +22,7 @@ typedef struct {
 	size_t symbolID,tradeCount;
 } MovingAverage;
 
+void init_trade(Trade* trade);
 Candle* init_candle(size_t size);
 void destroy_candle(Candle *candle);
 MovingAverage *init_movAvg(size_t size);

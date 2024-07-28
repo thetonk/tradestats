@@ -10,10 +10,23 @@
 #include <stdio.h>
 #include <time.h>
 
+void init_trade(Trade* trade){
+    trade->price = 0;
+    trade->symbolID = 0;
+    trade->timestamp = 0;
+    trade->volume = 0;
+}
+
 Candle* init_candle(size_t size){
     Candle* candle = malloc(size*sizeof(Candle));
     for(size_t i = 0; i < size; ++i){
         candle[i].totalVolume = INIT_VOLUME_VALUE;
+        init_trade(&candle[i].first);
+        init_trade(&candle[i].last);
+        init_trade(&candle[i].max);
+        init_trade(&candle[i].max);
+        init_trade(&candle[i].min);
+        candle[i].symbolID = 0;
     }
     return candle;
 }
@@ -26,6 +39,10 @@ MovingAverage* init_movAvg(size_t size){
     MovingAverage* ma = malloc(size*sizeof(MovingAverage));
     for(size_t i = 0; i< size; ++i){
         ma[i].totalVolume = INIT_VOLUME_VALUE;
+        init_trade(&ma[i].first);
+        ma[i].tradeCount = 0;
+        ma[i].averagePrice = 0;
+        ma[i].symbolID = 0;
     }
     return ma;
 }
@@ -118,7 +135,7 @@ void writeCandleFile(char *symbolName, Candle *candle){
     const size_t filenameLength = strlen(folderPath)+SYMBOL_LENGTH+strlen("_candles.csv");
     char filename[filenameLength];
     mkdir(folderPath, 0755);
-    size_t bytes = snprintf(filename,filenameLength,"%s/%s_candles.csv",folderPath,symbolName);
+    snprintf(filename,filenameLength,"%s/%s_candles.csv",folderPath,symbolName);
     struct stat stats;
     bool fileRequiresHeader = (stat(filename, &stats) != 0);
     FILE *fp = fopen(filename, "a");
@@ -142,7 +159,7 @@ void writeMovingAverageFile(char *symbolName, MovingAverage *movingAverage){
     const size_t filenameLength = strlen(folderPath)+SYMBOL_LENGTH+strlen("_movingAverages.csv");
     char filename[filenameLength];
     mkdir(folderPath, 0755);
-    size_t bytes = snprintf(filename,filenameLength,"%s/%s_movingAverages.csv",folderPath,symbolName);
+    snprintf(filename,filenameLength,"%s/%s_movingAverages.csv",folderPath,symbolName);
     struct stat stats;
     bool fileRequiresHeader = (stat(filename, &stats) != 0);
     FILE *fp = fopen(filename, "a");
@@ -167,7 +184,7 @@ void writeSymbolTradesFile(char *symbolName, Trade *trade){
     struct tm timedate = *localtime(&trade->timestamp);
     char filename[filenameLength];
     mkdir(folderPath, 0755);
-    size_t bytes = snprintf(filename,filenameLength,"%s/%s_trades.csv",folderPath,symbolName);
+    snprintf(filename,filenameLength,"%s/%s_trades.csv",folderPath,symbolName);
     struct stat stats;
     bool fileRequiresHeader = (stat(filename, &stats) != 0);
     FILE *fp = fopen(filename, "a");

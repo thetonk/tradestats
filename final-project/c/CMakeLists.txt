@@ -5,12 +5,13 @@ set(EXECUTABLE_OUTPUT_PATH "bin")
 
 set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_C_COMPILER gcc)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON) #useful if using clangd
+add_compile_options(-g -Wall -Wextra)
 
 if(CMAKE_TOOLCHAIN_FILE)
   include(${CMAKE_TOOLCHAIN_FILE})
 endif()
 
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON) #useful if using clangd
 message("Using compiler ${CMAKE_C_COMPILER}")
 add_subdirectory("${PROJECT_SOURCE_DIR}/src")
 add_executable(main "${PROJECT_SOURCE_DIR}/main.c")

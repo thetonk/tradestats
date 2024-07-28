@@ -37,6 +37,12 @@ void queue_insert(Queue *q, void *item){
     }
 }
 
+void queue_peek_head(Queue *q, void *out){
+    if(!q->isEmpty){
+        memcpy(out, (char*) q->data+ q->head*q->elemSize, q->elemSize);
+    }
+}
+
 void queue_pop(Queue* q, void* out){
     if(!q->isEmpty){
         memcpy(out, (char*) q->data+ q->head*q->elemSize, q->elemSize);
