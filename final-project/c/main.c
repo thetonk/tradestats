@@ -25,6 +25,9 @@ static char** Symbols;
 static pthread_t keyLogger;
 static pthread_mutex_t tradeLoggerMutex, candleMutex, movAvgMutex;
 static pthread_cond_t tradeLoggerCondition;
+static size_t *totalTrades;
+static double *totalVolumes, *totalPrices;
+static Queue** movAvgQueuePtr = NULL; //this pointer enables ticker thread to check whether queues are full or not
 static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void *user, void* in, size_t len);
 static Vector *candleConsVector, *movAvgConsVector, *tradeLogConsVector;
 
@@ -88,7 +91,7 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 	// Our client received something
 	case LWS_CALLBACK_CLIENT_RECEIVE:
 	{
-		cJSON *jsonResponse = cJSON_Parse(in);
+		cJSON* jsonResponse = cJSON_Parse(in);
 		if(jsonResponse == NULL){
 			lwsl_err("Error parsing JSON response!\n");
 			const char *error_ptr = cJSON_GetErrorPtr();
@@ -131,6 +134,7 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 				//printf("Time: %02d:%02d:%02d, symbol: %s, price: %.2lf, volume: %lf\n",ctimestamp.tm_hour,ctimestamp.tm_min,ctimestamp.tm_sec,Symbols[symbolID],priceItem->valuedouble, volumeItem->valuedouble);
 			}
 		}
+		cJSON_Delete(jsonResponse);
 	}
 		break;
 	// Here the server tries to confirm if a certain extension is supported by the server
@@ -175,7 +179,7 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 
 void *consumerCandle(void *q){
 	Vector *vec = (Vector*) q;
-	struct tm firstTime, lastTime,currentTime;
+	struct tm firstTime, lastTime;
 	Trade last;
 	while(!bExit){
 		pthread_mutex_lock(vec->mutex);
@@ -187,8 +191,6 @@ void *consumerCandle(void *q){
 		candles[last.symbolID].last = last;
 		lastTime = *localtime(&candles[last.symbolID].last.timestamp);
 		firstTime = *localtime(&(candles[last.symbolID].first.timestamp));
-		time_t currentTimestamp = time(NULL);
-		currentTime = *localtime(&currentTimestamp);
 		//printf("consumerCandle thread got price %.2lf of symbol %s, time: %02d:%02d:%02d, volume: %lf\n",last.price,Symbols[last.symbolID],lastTime.tm_hour,lastTime.tm_min,lastTime.tm_sec,last.volume);
 		if ((int64_t) candles[last.symbolID].totalVolume == (int64_t) INIT_VOLUME_VALUE){
 			candles[last.symbolID].totalVolume = last.volume;
@@ -251,12 +253,7 @@ void* consumerMovingAverage(void* args){
 	Queue** totalPricePerMinute = (Queue**) malloc(symbolCount*sizeof(Queue*));
 	Queue** timestampsPerMinute = (Queue**) malloc(symbolCount*sizeof(Queue*));
 	Queue** totalVolumePerMinute = (Queue**) malloc(symbolCount*sizeof(Queue*));
-	size_t* totalTrades = (size_t*) malloc(symbolCount*sizeof(size_t));
-	double* totalPrices = (double*) malloc(symbolCount*sizeof(double));
-	double* totalVolumes = (double*) malloc(symbolCount*sizeof(double));
-	memset(totalPrices, 0, symbolCount*sizeof(double));
-	memset(totalTrades,0,symbolCount*sizeof(size_t));
-	memset(totalVolumes,0,symbolCount*sizeof(double));
+	movAvgQueuePtr = totalPricePerMinute; //enables ticker thread to check whether queues are full or not
 	for(size_t i = 0; i < symbolCount;++i){
 		totalPricePerMinute[i] = queue_init(MOVING_AVERAGE_INTERVAL_MINUTES, sizeof(double));
 		totalTradesPerMinute[i] = queue_init(MOVING_AVERAGE_INTERVAL_MINUTES, sizeof(size_t));
@@ -354,9 +351,6 @@ void* consumerMovingAverage(void* args){
 	free(totalPricePerMinute);
 	free(timestampsPerMinute);
 	free(totalVolumePerMinute);
-	free(totalTrades);
-	free(totalPrices);
-	free(totalVolumes);
 	return NULL;
 }
 
@@ -385,10 +379,11 @@ void *consumerTradeLogger(void *args){
 }
 
 void *commandListener(void *arg){
-	char *command;
-	size_t len = 15;
+	const size_t len = 15;
+	char command[len];
 	while(!bExit){
-		getline(&command, &len, stdin);
+		memset(command,0,len);
+		fgets(command, len, stdin);
 		if(strcmp(command, "LOGSTART\n") == 0){
 			tradeLogging = true;
 			pthread_cond_signal(&tradeLoggerCondition);
@@ -428,7 +423,7 @@ void *ticker(void *arg){
 				}
 				else{
 					struct tm candleFirstDate = *localtime(&candles[i].first.timestamp);
-					if(candles[i].totalVolume != INIT_VOLUME_VALUE && candleFirstDate.tm_min == lastDate.tm_min - 1){
+					if((int64_t) candles[i].totalVolume != INIT_VOLUME_VALUE && candleFirstDate.tm_min == lastDate.tm_min - 1){
 						printf(TICKER_LOG_COLOR"Older candle data for symbol %s can be used!\n"ANSI_RESET,Symbols[i]);
 						writeCandleFile(Symbols[i], &candles[i]);
 						candles[i].totalVolume = INIT_VOLUME_VALUE;
@@ -445,6 +440,22 @@ void *ticker(void *arg){
 					//	   prev_movAverages[i].tradeCount,prev_movAverages[i].averagePrice,prev_movAverages[i].totalVolume);
 					writeMovingAverageFile(Symbols[i], &prev_movAverages[i]);
 					prev_movAverages[i].totalVolume = INIT_VOLUME_VALUE;
+				}
+				else if((int64_t) movAverages[i].totalVolume != INIT_VOLUME_VALUE && movAvgQueuePtr != NULL){
+					if(movAvgQueuePtr[i]->isFull){
+						printf(TICKER_LOG_COLOR"Older MA data for symbol %s can be used!\n"ANSI_RESET,Symbols[i]);
+						movAverages[i].averagePrice = totalPrices[i]/totalTrades[i];
+						movAverages[i].tradeCount = totalTrades[i];
+						movAverages[i].totalVolume = totalVolumes[i];
+						writeMovingAverageFile(Symbols[i], &movAverages[i]);
+						movAverages[i].totalVolume = INIT_VOLUME_VALUE;
+					}
+					else{
+						printf(TICKER_LOG_COLOR"No MA data for symbol %s yet!\n"ANSI_RESET,Symbols[i]);
+					}
+				}
+				else{
+					printf(TICKER_LOG_COLOR"No MA data for symbol %s!\n"ANSI_RESET,Symbols[i]);
 				}
 				pthread_mutex_unlock(&movAvgMutex);
 			}
@@ -477,6 +488,12 @@ int main(int argc, char *argv[])
 	prev_candles = init_candle(symbolCount);
 	movAverages = init_movAvg(symbolCount);
 	prev_movAverages = init_movAvg(symbolCount);
+	totalTrades = (size_t*) malloc(symbolCount*sizeof(size_t));
+	totalPrices = (double*) malloc(symbolCount*sizeof(double));
+	totalVolumes = (double*) malloc(symbolCount*sizeof(double));
+	memset(totalPrices, 0, symbolCount*sizeof(double));
+	memset(totalTrades,0,symbolCount*sizeof(size_t));
+	memset(totalVolumes,0,symbolCount*sizeof(double));
 	lws_set_log_level(LLL_ERR| LLL_WARN | LLL_NOTICE | LLL_INFO | LLL_USER, lwsl_emit_stderr);
 	signal(SIGINT, onSigInt); // Register the SIGINT handler
 	// Connection info
@@ -568,6 +585,9 @@ int main(int argc, char *argv[])
 	destroy_candle(prev_candles);
 	destroy_movAvg(movAverages);
 	destroy_movAvg(prev_movAverages);
+	free(totalTrades);
+	free(totalPrices);
+	free(totalVolumes);
 	printf("Done executing.\n");
 	return 0;
 }
