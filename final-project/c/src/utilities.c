@@ -103,7 +103,7 @@ size_t getFileLineCount(char *filename){
     if (file == NULL){
         return 0;
     }
-    char ch = 0;
+    int8_t ch = 0;
     size_t lines = 0;
     while((ch = fgetc(file)) != EOF){
         if(ch == '\n')
