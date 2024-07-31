@@ -458,6 +458,18 @@ void *ticker(void *arg){
 	return NULL;
 }
 
+void setup_context(struct lws_context_creation_info *ctxCreationInfo){
+	memset(ctxCreationInfo, 0, sizeof(*ctxCreationInfo));
+    ctxCreationInfo->options |= LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
+	// Set up the context creation info
+	ctxCreationInfo->port = CONTEXT_PORT_NO_LISTEN; // We don't want this client to listen
+	ctxCreationInfo->protocols = protocols; // Use our protocol list
+    ctxCreationInfo->ssl_ca_filepath = "/etc/ssl/certs/ca-certificates.crt";
+	ctxCreationInfo->gid = -1; // Set the gid and uid to -1, isn't used much
+	ctxCreationInfo->uid = -1;
+	ctxCreationInfo->extensions = extensions; // Use our extensions list
+}
+
 void setup_ws_connection(struct lws_client_connect_info* clientConnectInfo, struct lws_context *ctx,struct lws** wsi, char path[80]){
 	// Set up the client creation info
 	memset(clientConnectInfo,0, sizeof(*clientConnectInfo));
@@ -518,15 +530,8 @@ int main(int argc, char *argv[])
 	{
 		lwsl_err("Couldn't parse URL\n");
 	}*/
-    ctxCreationInfo.options |= LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
-	// Set up the context creation info
-	ctxCreationInfo.port = CONTEXT_PORT_NO_LISTEN; // We don't want this client to listen
-	ctxCreationInfo.protocols = protocols; // Use our protocol list
-    ctxCreationInfo.ssl_ca_filepath = "/etc/ssl/certs/ca-certificates.crt";
-	ctxCreationInfo.gid = -1; // Set the gid and uid to -1, isn't used much
-	ctxCreationInfo.uid = -1;
-	ctxCreationInfo.extensions = extensions; // Use our extensions list
 	// Create the context with the info
+	setup_context(&ctxCreationInfo);
 	ctx = lws_create_context(&ctxCreationInfo);
 	if (ctx == NULL)
 	{
@@ -562,6 +567,10 @@ int main(int argc, char *argv[])
 		if(wsiTest == NULL || force_reconnect){
 			force_reconnect = false;
 			lwsl_err("Connection destroyed! Attempting reconnect!\n");
+			lws_context_destroy(ctx);
+			// Create the context with the info
+			setup_context(&ctxCreationInfo);
+			ctx = lws_create_context(&ctxCreationInfo);
 			// Set up the client creation info
 			setup_ws_connection(&clientConnectInfo, ctx, &wsiTest, path);
 			lws_client_connect_via_info(&clientConnectInfo);
@@ -570,7 +579,7 @@ int main(int argc, char *argv[])
 		lws_service(ctx, 100);
 		if(lws_get_socket_fd(wsiTest) == LWS_SOCK_INVALID){
 			wsiTest = NULL;
-			usleep(300);
+			sleep(1);
 		}
 	}
 	pthread_join(candleThread,NULL);
