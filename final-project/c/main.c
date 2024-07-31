@@ -17,6 +17,7 @@
 
 static bool bExit = false;
 static bool tradeLogging = false;
+static bool force_reconnect = false;
 static size_t symbolCount;
 static Candle *candles, *prev_candles;
 static MovingAverage* movAverages, *prev_movAverages;
@@ -167,6 +168,7 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 
 		// There was an error connecting to the server
 	case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
+		force_reconnect = true;
 		lwsl_err("[Test Protocol] There was a connection error: %s\n", in ? (char*)in : "(no error information)");
 		break;
 
@@ -193,20 +195,14 @@ void *consumerCandle(void *q){
 		firstTime = *localtime(&(candles[last.symbolID].first.timestamp));
 		//printf("consumerCandle thread got price %.2lf of symbol %s, time: %02d:%02d:%02d, volume: %lf\n",last.price,Symbols[last.symbolID],lastTime.tm_hour,lastTime.tm_min,lastTime.tm_sec,last.volume);
 		if ((int64_t) candles[last.symbolID].totalVolume == (int64_t) INIT_VOLUME_VALUE){
-			candles[last.symbolID].totalVolume = last.volume;
-			candles[last.symbolID].first = last;
-			candles[last.symbolID].min = last;
-			candles[last.symbolID].max = last;
+			reset_candle(&candles[last.symbolID], &last);
 		}
 		else if(firstTime.tm_min == lastTime.tm_min -1 || (firstTime.tm_min == 59 && lastTime.tm_min == 0)){
 			printf(CANDLE_LOG_COLOR"FINAL CANDLE for %s initialized! Start time: %02d:%02d:%02d -> %02d:%02d:%02d\n"ANSI_RESET, Symbols[last.symbolID],firstTime.tm_hour,
 				       firstTime.tm_min,firstTime.tm_sec,lastTime.tm_hour,lastTime.tm_min,lastTime.tm_sec);
 			pthread_mutex_lock(&candleMutex);
 			prev_candles[last.symbolID] = candles[last.symbolID];
-			candles[last.symbolID].totalVolume = last.volume;
-			candles[last.symbolID].first = last;
-			candles[last.symbolID].min = last;
-			candles[last.symbolID].max = last;
+			reset_candle(&candles[last.symbolID], &last);
 			pthread_mutex_unlock(&candleMutex);
 		}
 		else{
@@ -215,10 +211,7 @@ void *consumerCandle(void *q){
 				prev_candles[last.symbolID].last = last;
 				if((int64_t) prev_candles[last.symbolID].totalVolume == (int64_t) INIT_VOLUME_VALUE){ //rare occasion
 					printf(CANDLE_LOG_COLOR"Retarded symbol initialization %s\n"ANSI_RESET,Symbols[last.symbolID]);
-					prev_candles[last.symbolID].totalVolume = last.volume;
-					prev_candles[last.symbolID].first = last;
-					prev_candles[last.symbolID].min = last;
-					prev_candles[last.symbolID].max = last;
+					reset_candle(&prev_candles[last.symbolID], &last);
 				}
 				else{
 					//printf("An older trade arrived late of symbol %s!\n",Symbols[last.symbolID]);
@@ -253,6 +246,7 @@ void* consumerMovingAverage(void* args){
 	Queue** totalPricePerMinute = (Queue**) malloc(symbolCount*sizeof(Queue*));
 	Queue** timestampsPerMinute = (Queue**) malloc(symbolCount*sizeof(Queue*));
 	Queue** totalVolumePerMinute = (Queue**) malloc(symbolCount*sizeof(Queue*));
+	bool oldDataFound;
 	movAvgQueuePtr = totalPricePerMinute; //enables ticker thread to check whether queues are full or not
 	for(size_t i = 0; i < symbolCount;++i){
 		totalPricePerMinute[i] = queue_init(MOVING_AVERAGE_INTERVAL_MINUTES, sizeof(double));
@@ -263,6 +257,7 @@ void* consumerMovingAverage(void* args){
 	struct tm firstTime, lastTime;
 	Trade last;
 	while(!bExit){
+		oldDataFound = false;
 		pthread_mutex_lock(vec->mutex);
 		while(vec->size == 0 && !bExit){
 			pthread_cond_wait(vec->isEmpty,vec->mutex);
@@ -272,36 +267,40 @@ void* consumerMovingAverage(void* args){
 		lastTime = *localtime(&last.timestamp);
 		firstTime = *localtime(&movAverages[last.symbolID].first.timestamp);
 		//printf("consumerMA thread got price %.2lf of symbol %s, time: %02d:%02d:%02d, volume: %lf\n",last.price,Symbols[last.symbolID],lastTime.tm_hour,lastTime.tm_min,lastTime.tm_sec,last.volume);
+		//clean up any too old leftover data from the queues
+		if(!totalPricePerMinute[last.symbolID]->isEmpty){
+			time_t timestamp;
+			for(size_t i = 0; i < totalPricePerMinute[last.symbolID]->size;++i){
+				queue_peek_head(timestampsPerMinute[last.symbolID], (time_t*) &timestamp);
+				if((int64_t) difftime(last.timestamp, timestamp) >= MOVING_AVERAGE_INTERVAL_MINUTES*60 + 20){
+					double oldPrice, oldVolume;
+					size_t oldTrades;
+					lwsl_warn("Too old data found in MA queue for symbol %s, cleaning up!", Symbols[last.symbolID]);
+					queue_pop(totalPricePerMinute[last.symbolID], &oldPrice);
+					queue_pop(totalVolumePerMinute[last.symbolID], &oldVolume);
+					queue_pop(timestampsPerMinute[last.symbolID], &timestamp);
+					queue_pop(totalTradesPerMinute[last.symbolID], &oldTrades);
+					totalTrades[last.symbolID] -= oldTrades;
+					totalPrices[last.symbolID] -= oldPrice;
+					totalVolumes[last.symbolID] -= oldVolume;
+					oldDataFound = true;
+				}
+				else break;
+			}
+		}
 		if ((int64_t) movAverages[last.symbolID].totalVolume == (int64_t) INIT_VOLUME_VALUE){
-			movAverages[last.symbolID].totalVolume = last.volume;
-			movAverages[last.symbolID].first = last;
-			movAverages[last.symbolID].averagePrice = last.price;
-			movAverages[last.symbolID].tradeCount = 1;
+			reset_movAvg(&movAverages[last.symbolID], &last);
 		}
 		else if(firstTime.tm_min == lastTime.tm_min -1 || (firstTime.tm_min == 59 && lastTime.tm_min == 0)){
 			totalPrices[last.symbolID] += movAverages[last.symbolID].averagePrice;
 			totalTrades[last.symbolID] += movAverages[last.symbolID].tradeCount;
 			totalVolumes[last.symbolID] += movAverages[last.symbolID].totalVolume;
-			if(totalPricePerMinute[last.symbolID]->isFull){
-				size_t oldestTotalTrades;
-				double oldestTotalPrice, oldestTotalVolume;
-				time_t oldestTimestamp;
-				//remove oldest value
-				queue_pop(totalPricePerMinute[last.symbolID], &oldestTotalPrice);
-				queue_pop(totalTradesPerMinute[last.symbolID], &oldestTotalTrades);
-				queue_pop(totalVolumePerMinute[last.symbolID], &oldestTotalVolume);
-				queue_pop(timestampsPerMinute[last.symbolID], &oldestTimestamp); //discard oldest timestamp, as it's no needed anymore
-				//remove oldest values from MA calculation
-				totalPrices[last.symbolID] -= oldestTotalPrice;
-				totalTrades[last.symbolID] -= oldestTotalTrades;
-				totalVolumes[last.symbolID] -= oldestTotalVolume;
-			}
 			queue_insert(totalTradesPerMinute[last.symbolID], &movAverages[last.symbolID].tradeCount);
 			queue_insert(totalPricePerMinute[last.symbolID], &movAverages[last.symbolID].averagePrice);
 			queue_insert(timestampsPerMinute[last.symbolID], &movAverages[last.symbolID].first.timestamp);
 			queue_insert(totalVolumePerMinute[last.symbolID], &movAverages[last.symbolID].totalVolume);
 			pthread_mutex_lock(&movAvgMutex);
-			if(totalPricePerMinute[last.symbolID]->isFull){
+			if(totalPricePerMinute[last.symbolID]->isFull || oldDataFound){
 				queue_peek_head(timestampsPerMinute[last.symbolID],(time_t*) &movAverages[last.symbolID].first.timestamp);
 				firstTime = *localtime(&movAverages[last.symbolID].first.timestamp);
 				printf(MA_LOG_COLOR"%s %d FINAL MA triggered! Start time: %02d:%02d:%02d -> %02d:%02d:%02d\n"ANSI_RESET,Symbols[last.symbolID],MOVING_AVERAGE_INTERVAL_MINUTES,
@@ -311,20 +310,14 @@ void* consumerMovingAverage(void* args){
 				movAverages[last.symbolID].totalVolume = totalVolumes[last.symbolID];
 				prev_movAverages[last.symbolID] = movAverages[last.symbolID];
 			}
-			movAverages[last.symbolID].first = last;
-			movAverages[last.symbolID].tradeCount = 1;
-			movAverages[last.symbolID].totalVolume = last.volume;
-			movAverages[last.symbolID].averagePrice = last.price;
+			reset_movAvg(&movAverages[last.symbolID], &last);
 			pthread_mutex_unlock(&movAvgMutex);
 		}
 		else{
 			if(firstTime.tm_min > lastTime.tm_min && !(firstTime.tm_min == 59 && lastTime.tm_min == 0)){ //when an older trade appears out of order later
 				pthread_mutex_lock(&movAvgMutex);
 				if(prev_movAverages[last.symbolID].totalVolume == INIT_VOLUME_VALUE){ //rare occasion
-					prev_movAverages[last.symbolID].first = last;
-					prev_movAverages[last.symbolID].averagePrice = last.price;
-					prev_movAverages[last.symbolID].totalVolume = last.volume;
-					prev_movAverages[last.symbolID].tradeCount = 1;
+					reset_movAvg(&prev_movAverages[last.symbolID], &last);
 				}
 				else{
 					prev_movAverages[last.symbolID].tradeCount++;
@@ -444,7 +437,7 @@ void *ticker(void *arg){
 				else if((int64_t) movAverages[i].totalVolume != INIT_VOLUME_VALUE && movAvgQueuePtr != NULL){
 					if(movAvgQueuePtr[i]->isFull){
 						printf(TICKER_LOG_COLOR"Older MA data for symbol %s can be used!\n"ANSI_RESET,Symbols[i]);
-						movAverages[i].averagePrice = totalPrices[i]/totalTrades[i];
+						movAverages[i].averagePrice = totalPrices[i] / totalTrades[i];
 						movAverages[i].tradeCount = totalTrades[i];
 						movAverages[i].totalVolume = totalVolumes[i];
 						writeMovingAverageFile(Symbols[i], &movAverages[i]);
@@ -463,6 +456,21 @@ void *ticker(void *arg){
 		sleep(1);
 	}
 	return NULL;
+}
+
+void setup_ws_connection(struct lws_client_connect_info* clientConnectInfo, struct lws_context *ctx,struct lws** wsi, char path[80]){
+	// Set up the client creation info
+	memset(clientConnectInfo,0, sizeof(*clientConnectInfo));
+	clientConnectInfo->address = WS_DOMAIN_NAME;
+	clientConnectInfo->context = ctx; // Use our created context
+    clientConnectInfo->ssl_connection = LCCSCF_USE_SSL;
+    clientConnectInfo->port = 443;
+	clientConnectInfo->path = path;
+	clientConnectInfo->host = clientConnectInfo->address; // Set the connections host to the address
+	clientConnectInfo->origin = clientConnectInfo->address; // Set the conntections origin to the address
+	clientConnectInfo->ietf_version_or_minus_one = -1; // IETF version is -1 (the latest one)
+	clientConnectInfo->protocol = protocols[PROTOCOL_TEST].name; // We use our test protocol
+	clientConnectInfo->pwsi = wsi; // The created client should be fed inside the wsi_test variable
 }
 
 // Main application entry
@@ -497,19 +505,19 @@ int main(int argc, char *argv[])
 	lws_set_log_level(LLL_ERR| LLL_WARN | LLL_NOTICE | LLL_INFO | LLL_USER, lwsl_emit_stderr);
 	signal(SIGINT, onSigInt); // Register the SIGINT handler
 	// Connection info
-	char inputURL[] = "wss://ws.finnhub.io";
+	//char inputURL[] = "wss://ws.finnhub.io";
 	struct lws_context_creation_info ctxCreationInfo; // Context creation info
 	struct lws_client_connect_info clientConnectInfo; // Client creation info
 	struct lws_context *ctx; // The context to use
 	struct lws *wsiTest; // WebSocket interface
-	const char *urlProtocol, *urlTempPath; // the protocol of the URL, and a temporary pointer to the path
+	//const char *urlProtocol, *urlTempPath; // the protocol of the URL, and a temporary pointer to the path
 	// Set both information to empty and allocate it's memory
 	memset(&ctxCreationInfo, 0, sizeof(ctxCreationInfo));
-	memset(&clientConnectInfo, 0, sizeof(clientConnectInfo));
+	/*memset(&clientConnectInfo, 0, sizeof(clientConnectInfo));
 	if (lws_parse_uri(inputURL, &urlProtocol, &clientConnectInfo.address, &clientConnectInfo.port, &urlTempPath))
 	{
-		printf("Couldn't parse URL\n");
-	}
+		lwsl_err("Couldn't parse URL\n");
+	}*/
     ctxCreationInfo.options |= LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
 	// Set up the context creation info
 	ctxCreationInfo.port = CONTEXT_PORT_NO_LISTEN; // We don't want this client to listen
@@ -522,20 +530,11 @@ int main(int argc, char *argv[])
 	ctx = lws_create_context(&ctxCreationInfo);
 	if (ctx == NULL)
 	{
-		printf("Error creating context\n");
+		lwsl_err("Error creating context\n");
 		return 1;
 	}
 	// Set up the client creation info
-	clientConnectInfo.context = ctx; // Use our created context
-    clientConnectInfo.ssl_connection = LCCSCF_USE_SSL;
-    clientConnectInfo.port = 443;
-	clientConnectInfo.path = path;
-	clientConnectInfo.host = clientConnectInfo.address; // Set the connections host to the address
-	clientConnectInfo.origin = clientConnectInfo.address; // Set the conntections origin to the address
-	clientConnectInfo.ietf_version_or_minus_one = -1; // IETF version is -1 (the latest one)
-	clientConnectInfo.protocol = protocols[PROTOCOL_TEST].name; // We use our test protocol
-	clientConnectInfo.pwsi = &wsiTest; // The created client should be fed inside the wsi_test variable
-	lwsl_notice("Connecting to %s://%s:%d%s \n\n", urlProtocol, clientConnectInfo.address, clientConnectInfo.port, clientConnectInfo.path);
+	setup_ws_connection(&clientConnectInfo, ctx, &wsiTest, path);
 	//initialize consumer queues
 	candleConsVector = vector_init(10,sizeof(Trade));
 	movAvgConsVector = vector_init(10, sizeof(Trade));
@@ -560,8 +559,19 @@ int main(int argc, char *argv[])
 	// Main loop runs till bExit is true, which forces an exit of this loop
 	while (!bExit)
 	{
+		if(wsiTest == NULL || force_reconnect){
+			force_reconnect = false;
+			lwsl_err("Connection destroyed! Attempting reconnect!\n");
+			// Set up the client creation info
+			setup_ws_connection(&clientConnectInfo, ctx, &wsiTest, path);
+			lws_client_connect_via_info(&clientConnectInfo);
+		}
 		// LWS' function to run the message loop, which polls in this example every 100 milliseconds on our created context
 		lws_service(ctx, 100);
+		if(lws_get_socket_fd(wsiTest) == LWS_SOCK_INVALID){
+			wsiTest = NULL;
+			usleep(300);
+		}
 	}
 	pthread_join(candleThread,NULL);
 	pthread_join(movingAverageThread,NULL);

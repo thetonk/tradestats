@@ -24,8 +24,10 @@ typedef struct {
 
 void init_trade(Trade* trade);
 Candle* init_candle(size_t size);
+void reset_candle(Candle* candle, Trade* last);
 void destroy_candle(Candle *candle);
 MovingAverage *init_movAvg(size_t size);
+void reset_movAvg(MovingAverage* movAvg,Trade* last);
 void destroy_movAvg(MovingAverage* ma);
 char** readSymbolsFile(char *filename, size_t linecount);
 size_t getFileLineCount(char *filename);

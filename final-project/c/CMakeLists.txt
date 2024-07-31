@@ -7,12 +7,13 @@ set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_C_COMPILER gcc)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON) #useful if using clangd
 add_compile_options(-g -Wall -Wextra)
-
+set(EXECUTABLE_NAME "main")
 set(MA_INTERVAL "3" CACHE STRING "Moving average interval in minutes")
 set(STATS_OUTPUT_DIR "out" CACHE STRING "Output directory path for statistics and logs (candles, moving averages, trade logs)")
 
 if(CMAKE_TOOLCHAIN_FILE)
   include(${CMAKE_TOOLCHAIN_FILE})
+  set(EXECUTABLE_NAME "main-armhf")
 endif()
 
 if(MA_INTERVAL)
@@ -24,6 +25,6 @@ endif()
 
 message("Using compiler ${CMAKE_C_COMPILER}")
 add_subdirectory("${PROJECT_SOURCE_DIR}/src")
-add_executable(main "${PROJECT_SOURCE_DIR}/main.c")
-target_include_directories(main PUBLIC "include")
-target_link_libraries(main myLibs websockets pthread)
+add_executable("${EXECUTABLE_NAME}" "${PROJECT_SOURCE_DIR}/main.c")
+target_include_directories("${EXECUTABLE_NAME}" PUBLIC "include")
+target_link_libraries("${EXECUTABLE_NAME}" myLibs websockets pthread)

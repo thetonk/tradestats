@@ -31,6 +31,13 @@ Candle* init_candle(size_t size){
     return candle;
 }
 
+void reset_candle(Candle *candle, Trade *last){
+    candle->totalVolume = last->volume;
+    candle->first = *last;
+    candle->min = *last;
+    candle->max = *last;
+}
+
 void destroy_candle(Candle *candle){
     free(candle);
 }
@@ -45,6 +52,13 @@ MovingAverage* init_movAvg(size_t size){
         ma[i].symbolID = 0;
     }
     return ma;
+}
+
+void reset_movAvg(MovingAverage *movAvg, Trade *last){
+    movAvg->totalVolume = last->volume;
+	movAvg->first = *last;
+	movAvg->averagePrice = last->price;
+	movAvg->tradeCount = 1;
 }
 
 void destroy_movAvg(MovingAverage *ma){

@@ -3,6 +3,7 @@
 
 #define SYMBOL_LENGTH 50
 #define SUBSCRIBE_MESSAGE_LENGTH 200
+#define WS_DOMAIN_NAME "ws.finnhub.io"
 #define INIT_VOLUME_VALUE -1
 #ifndef OUTPUT_DIRECTORY
 #define OUTPUT_DIRECTORY "out"
