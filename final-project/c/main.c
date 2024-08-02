@@ -128,10 +128,12 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 				vector_push_back(movAvgConsVector, &tradeItem);
 				pthread_cond_signal(movAvgConsVector->isEmpty);
 				pthread_mutex_unlock(movAvgConsVector->mutex);
-				pthread_mutex_lock(tradeLogConsVector->mutex);
-				vector_push_back(tradeLogConsVector, &tradeItem);
-				pthread_cond_signal(tradeLogConsVector->isEmpty);
-				pthread_mutex_unlock(tradeLogConsVector->mutex);
+				if(tradeLogging){ //avoid wasting memory when logging is disabled
+					pthread_mutex_lock(tradeLogConsVector->mutex);
+					vector_push_back(tradeLogConsVector, &tradeItem);
+					pthread_cond_signal(tradeLogConsVector->isEmpty);
+					pthread_mutex_unlock(tradeLogConsVector->mutex);
+				}
 				//printf("Time: %02d:%02d:%02d, symbol: %s, price: %.2lf, volume: %lf\n",ctimestamp.tm_hour,ctimestamp.tm_min,ctimestamp.tm_sec,Symbols[symbolID],priceItem->valuedouble, volumeItem->valuedouble);
 			}
 		}
@@ -351,13 +353,12 @@ void *consumerTradeLogger(void *args){
 	Vector *vec = (Vector*) args;
 	Trade last;
 	while(!bExit){
+		while(!tradeLogging){
+			pthread_cond_wait(&tradeLoggerCondition, &tradeLoggerMutex);
+		}
 		pthread_mutex_lock(vec->mutex);
 		while(vec->size == 0 && !bExit){
 			pthread_cond_wait(vec->isEmpty,vec->mutex);
-		}
-		while(!tradeLogging){
-			pthread_mutex_unlock(vec->mutex);
-			pthread_cond_wait(&tradeLoggerCondition, &tradeLoggerMutex);
 		}
 		if (vec->size > 0){
 			vector_pop(vec,(Trade *) &last);
@@ -567,7 +568,14 @@ int main(int argc, char *argv[])
 		if(wsiTest == NULL || force_reconnect){
 			force_reconnect = false;
 			lwsl_err("Connection destroyed! Attempting reconnect!\n");
+			// Clean up previous WebSocket interface
+			if (wsiTest)
+			{
+				lws_set_timeout(wsiTest, PENDING_TIMEOUT_CLOSE_ACK, LWS_TO_KILL_ASYNC);
+				wsiTest = NULL;
+			}
 			lws_context_destroy(ctx);
+			sleep(10);
 			// Create the context with the info
 			setup_context(&ctxCreationInfo);
 			ctx = lws_create_context(&ctxCreationInfo);
@@ -579,7 +587,7 @@ int main(int argc, char *argv[])
 		lws_service(ctx, 100);
 		if(lws_get_socket_fd(wsiTest) == LWS_SOCK_INVALID){
 			wsiTest = NULL;
-			sleep(1);
+			sleep(3);
 		}
 	}
 	pthread_join(candleThread,NULL);
