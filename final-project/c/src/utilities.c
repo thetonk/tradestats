@@ -1,5 +1,6 @@
 #include "utilities.h"
 #include "constants.h"
+#include "vector.h"
 #include <linux/limits.h>
 #include <stdint.h>
 #include <string.h>
@@ -23,7 +24,6 @@ Candle* init_candle(size_t size){
         candle[i].totalVolume = INIT_VOLUME_VALUE;
         init_trade(&candle[i].first);
         init_trade(&candle[i].last);
-        init_trade(&candle[i].max);
         init_trade(&candle[i].max);
         init_trade(&candle[i].min);
         candle[i].symbolID = 0;
@@ -50,6 +50,7 @@ MovingAverage* init_movAvg(size_t size){
         ma[i].tradeCount = 0;
         ma[i].averagePrice = 0;
         ma[i].symbolID = 0;
+        ma[i].stopTime = 0;
     }
     return ma;
 }
@@ -59,6 +60,7 @@ void reset_movAvg(MovingAverage *movAvg, Trade *last){
 	movAvg->first = *last;
 	movAvg->averagePrice = last->price;
 	movAvg->tradeCount = 1;
+    movAvg->stopTime = last->timestamp;
 }
 
 void destroy_movAvg(MovingAverage *ma){
@@ -112,6 +114,12 @@ size_t searchString(char **strings, char *findStr, size_t len){
     return UINT64_MAX; //something is wrong,return an invalid value
 }
 
+uint64_t difftimespec_us(const struct timespec *after, const struct timespec *before)
+{
+    return (uint64_t) ((int64_t)after->tv_sec - (int64_t)before->tv_sec) * (int64_t)1000000
+         + ((int64_t)after->tv_nsec - (int64_t)before->tv_nsec) / 1000;
+}
+
 size_t getFileLineCount(char *filename){
     FILE *file = fopen(filename, "r");
     if (file == NULL){
@@ -146,7 +154,7 @@ void writeCandleFile(char *symbolName, Candle *candle){
     //Write CSV file
     char folderPath[PATH_MAX];
     snprintf(folderPath,PATH_MAX, "%s/candleSticks",OUTPUT_DIRECTORY);
-    const size_t filenameLength = strlen(folderPath)+SYMBOL_LENGTH+strlen("_candles.csv");
+    const size_t filenameLength = strlen(folderPath)+SYMBOL_LENGTH+strlen("_candles.csv")+2; //extra 2 bytes needed, 1 for / and 1 for null char
     char filename[filenameLength];
     mkdir(folderPath, 0755);
     snprintf(filename,filenameLength,"%s/%s_candles.csv",folderPath,symbolName);
@@ -154,7 +162,7 @@ void writeCandleFile(char *symbolName, Candle *candle){
     bool fileRequiresHeader = (stat(filename, &stats) != 0);
     FILE *fp = fopen(filename, "a");
     if (fp == NULL){
-        printf("Cannot create file %s. Reason: %s\n", filename, strerror(errno));
+        printf(ERROR_LOG_COLOR"Cannot create file %s. Reason: %s\n"ANSI_RESET, filename, strerror(errno));
         return;
     }
     if(fileRequiresHeader){
@@ -170,7 +178,7 @@ void writeMovingAverageFile(char *symbolName, MovingAverage *movingAverage){
     //Write CSV file
     char folderPath[PATH_MAX];
     snprintf(folderPath,PATH_MAX, "%s/movingAverages",OUTPUT_DIRECTORY);
-    const size_t filenameLength = strlen(folderPath)+SYMBOL_LENGTH+strlen("_movingAverages.csv");
+    const size_t filenameLength = strlen(folderPath)+SYMBOL_LENGTH+strlen("_movingAverages.csv")+2; //extra 2 bytes needed, 1 for / and 1 for null char
     char filename[filenameLength];
     mkdir(folderPath, 0755);
     snprintf(filename,filenameLength,"%s/%s_movingAverages.csv",folderPath,symbolName);
@@ -178,13 +186,13 @@ void writeMovingAverageFile(char *symbolName, MovingAverage *movingAverage){
     bool fileRequiresHeader = (stat(filename, &stats) != 0);
     FILE *fp = fopen(filename, "a");
     if (fp == NULL){
-        printf("Cannot create file %s. Reason: %s\n", filename, strerror(errno));
+        printf(ERROR_LOG_COLOR"Cannot create file %s. Reason: %s\n"ANSI_RESET, filename, strerror(errno));
         return;
     }
     if(fileRequiresHeader){
-        fputs("Symbol,Timestamp,Total Trades,Average Price,Total Volume\n", fp);
+        fputs("Symbol,First Timestamp,Last Timestamp,Total Trades,Average Price,Total Volume\n", fp);
     }
-    fprintf(fp,"%s,%zu,%zu,%lf,%lf\n",symbolName,movingAverage->first.timestamp,movingAverage->tradeCount,movingAverage->averagePrice,
+    fprintf(fp,"%s,%zu,%zu,%zu,%lf,%lf\n",symbolName,movingAverage->first.timestamp,movingAverage->stopTime,movingAverage->tradeCount,movingAverage->averagePrice,
             movingAverage->totalVolume);
     fclose(fp);
 }
@@ -194,7 +202,7 @@ void writeSymbolTradesFile(char *symbolName, Trade *trade){
     //Write CSV file
     char folderPath[PATH_MAX];
     snprintf(folderPath,PATH_MAX, "%s/tradeLogs",OUTPUT_DIRECTORY);
-    const size_t filenameLength = strlen(folderPath)+SYMBOL_LENGTH+strlen("_trades.csv");
+    const size_t filenameLength = strlen(folderPath)+SYMBOL_LENGTH+strlen("_trades.csv")+2; //extra 2 bytes needed, 1 for / and 1 for null char
     struct tm timedate = *localtime(&trade->timestamp);
     char filename[filenameLength];
     mkdir(folderPath, 0755);
@@ -203,12 +211,37 @@ void writeSymbolTradesFile(char *symbolName, Trade *trade){
     bool fileRequiresHeader = (stat(filename, &stats) != 0);
     FILE *fp = fopen(filename, "a");
     if (fp == NULL){
-        printf("Cannot create file %s. Reason: %s\n", filename, strerror(errno));
+        printf(ERROR_LOG_COLOR"Cannot create file %s. Reason: %s\n"ANSI_RESET, filename, strerror(errno));
         return;
     }
     if(fileRequiresHeader){
         fputs("Symbol,Timestamp,Price,Volume\n", fp);
     }
     fprintf(fp,"%s,%02d:%02d:%02d,%lf,%lf\n",symbolName,timedate.tm_hour,timedate.tm_min,timedate.tm_sec,trade->price,trade->volume);
+    fclose(fp);
+}
+
+void writeDetentionTimesFile(char *threadName, Vector *data){
+    char folderPath[PATH_MAX];
+    uint64_t detTime_us = 0;
+    snprintf(folderPath, PATH_MAX, "%s/detentionTimes", OUTPUT_DIRECTORY);
+    const size_t filenameLength = strlen(folderPath)+strlen(threadName)+strlen(".csv") + 2; //extra 2 bytes needed, 1 for / and 1 for null char
+    char filePath[filenameLength+1];
+    mkdir(folderPath, 0755);
+    snprintf(filePath, filenameLength, "%s/%s.csv", folderPath,threadName);
+    struct stat stats;
+    bool fileRequiresHeader = (stat(filePath, &stats) != 0);
+    FILE *fp = fopen(filePath, "a");
+    if (fp == NULL){
+        printf(ERROR_LOG_COLOR"Cannot create file %s. Reason: %s\n"ANSI_RESET, filePath, strerror(errno));
+        return;
+    }
+    if(fileRequiresHeader){
+        fputs("Detention Time (us)\n", fp);
+    }
+    while(data->size > 0){
+        vector_pop(data,(uint64_t*) &detTime_us);
+        fprintf(fp, "%ld\n",detTime_us);
+    }
     fclose(fp);
 }
