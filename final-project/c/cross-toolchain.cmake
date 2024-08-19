@@ -4,9 +4,9 @@
 # This can be used when running cmake in the following way:
 #  cd build/
 #  cmake .. -DCMAKE_TOOLCHAIN_FILE=../cross-arm-linux-gnueabihf.cmake
-#In order for this toolchain to work, you must copy the directories under libc to the sysroot path
-set(CROSS_PATH /home/spyros/Downloads/cross-pi-gcc-10.3.0-0)
-set(SYSROOT ${CROSS_PATH}/arm-linux-gnueabihf)
+# In order for this toolchain to work, you must copy the directories under libc to the sysroot path
+set(CROSS_PATH /home/spyros/Downloads/cross-pi-gcc-10.3.0-0 CACHE STRING "Cross compiler toolchain path")
+set(SYSROOT ${CROSS_PATH}/arm-linux-gnueabihf CACHE STRING "Cross compiler sysroot path")
 # Target operating system name.
 set(CMAKE_SYSTEM_NAME Linux)
 message("SYSROOT: ${SYSROOT}")

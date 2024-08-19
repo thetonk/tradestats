@@ -38,11 +38,11 @@ static void onSigInt(int sig)
 {
 	lwsl_warn("Caught SIGINT! Exiting!\n");
 	bExit = true;
+	tradeLogging = true;
 	pthread_cancel(keyLogger); //stop keyLogger
 	//wake up any threads sleeping
 	pthread_cond_signal(candleConsVector->isEmpty);
 	pthread_cond_signal(movAvgConsVector->isEmpty);
-	tradeLogging = true;
 	pthread_cond_signal(&tradeLoggerCondition);
 	pthread_cond_signal(tradeLogConsVector->isEmpty);
 }
@@ -53,9 +53,12 @@ static struct lws_protocols protocols[] = {
 		"test-protocol", // Protocol name
 		callback_test,   // Protocol callback
 		0,
+		0,
+		0,
+		NULL,
 		0
 	},
-	{ NULL, NULL, 0,0 } // Always needed at the end
+	LWS_PROTOCOL_LIST_TERM // Always needed at the end { NULL, NULL, 0, 0, 0, NULL, 0 }
 };
 
 // The extensions LWS supports, without them some requests may not be able to work
@@ -258,6 +261,7 @@ void* consumerMovingAverage(void* args){
 	bool oldDataFound;
 	struct timespec popTime;
 	uint64_t detentionTime = 0;
+	int8_t diffMinutes = 0;
 	movAvgQueuePtr = totalPricePerMinute; //enables ticker thread to check whether queues are full or not
 	for(size_t i = 0; i < symbolCount;++i){
 		totalPricePerMinute[i] = queue_init(MOVING_AVERAGE_INTERVAL_MINUTES, sizeof(double));
@@ -280,6 +284,7 @@ void* consumerMovingAverage(void* args){
 		vector_push_back(movAvgConsDetTimes, &detentionTime);
 		lastTime = *localtime(&last.timestamp);
 		firstTime = *localtime(&movAverages[last.symbolID].first.timestamp);
+		diffMinutes = lastTime.tm_min - firstTime.tm_min;
 		//printf("consumerMA thread got price %.2lf of symbol %s, time: %02d:%02d:%02d, volume: %lf\n",last.price,Symbols[last.symbolID],lastTime.tm_hour,lastTime.tm_min,lastTime.tm_sec,last.volume);
 		//clean up any too old leftover data from the queues
 		if(!totalPricePerMinute[last.symbolID]->isEmpty){
@@ -305,7 +310,7 @@ void* consumerMovingAverage(void* args){
 		if ((int64_t) movAverages[last.symbolID].totalVolume == (int64_t) INIT_VOLUME_VALUE){
 			reset_movAvg(&movAverages[last.symbolID], &last);
 		}
-		else if(firstTime.tm_min == lastTime.tm_min -1 || (firstTime.tm_min == 59 && lastTime.tm_min == 0)){
+		else if(diffMinutes > 0 || ( diffMinutes < 0 && abs(diffMinutes) != 1)){
 			totalPrices[last.symbolID] += movAverages[last.symbolID].averagePrice;
 			totalTrades[last.symbolID] += movAverages[last.symbolID].tradeCount;
 			totalVolumes[last.symbolID] += movAverages[last.symbolID].totalVolume;
@@ -329,11 +334,11 @@ void* consumerMovingAverage(void* args){
 			pthread_mutex_unlock(&movAvgMutex);
 		}
 		else{
-			if(firstTime.tm_min > lastTime.tm_min && !(firstTime.tm_min == 59 && lastTime.tm_min == 0)){ //when an older trade appears out of order later
+			if(diffMinutes < 0 && !( diffMinutes < 0 && abs(diffMinutes) != 1)){ //when an older trade appears out of order later
 				pthread_mutex_lock(&movAvgMutex);
 				if(prev_movAverages[last.symbolID].totalVolume == INIT_VOLUME_VALUE){ //rare occasion, perhaps I must ignore this case
-					printf(MA_LOG_COLOR"Retarded MA initialization for %s\n"ANSI_RESET,Symbols[last.symbolID]);
-					reset_movAvg(&prev_movAverages[last.symbolID], &last);
+					printf(MA_LOG_COLOR"Retarded MA initialization for %s! Ignoring!\n"ANSI_RESET,Symbols[last.symbolID]);
+					//reset_movAvg(&prev_movAverages[last.symbolID], &last);
 				}
 				else{
 					prev_movAverages[last.symbolID].tradeCount++;

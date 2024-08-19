@@ -15,7 +15,7 @@ option(DEBUG "Add debug flags on compilation (debug symbols, warnings, etc)" OFF
 if(DEBUG)
   set(CMAKE_C_FLAGS "-g -Wall -Wextra")
 else()
-  set(CMAKE_C_FLAGS "-O3")
+  set(CMAKE_C_FLAGS "-O2")
 endif()
 
 if(CMAKE_TOOLCHAIN_FILE)
@@ -33,7 +33,7 @@ if(STATS_OUTPUT_DIR)
   add_compile_definitions(OUTPUT_DIRECTORY="${STATS_OUTPUT_DIR}")
 endif()
 
-message("Using compiler ${CMAKE_C_COMPILER}")
+message("Using compiler ${CMAKE_C_COMPILER} with compile flags ${CMAKE_C_FLAGS}")
 add_subdirectory("${PROJECT_SOURCE_DIR}/src")
 add_executable("${EXECUTABLE_NAME}" "${PROJECT_SOURCE_DIR}/main.c")
 target_include_directories("${EXECUTABLE_NAME}" PUBLIC "include")
