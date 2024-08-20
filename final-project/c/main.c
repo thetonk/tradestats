@@ -159,18 +159,19 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 	// The connection was successfully established
 	case LWS_CALLBACK_CLIENT_ESTABLISHED:
 		lwsl_info("[Test Protocol] Connection to server established.\n");
-		//char msg[SUBSCRIBE_MESSAGE_LENGTH];
+		sleep(1);
+		lws_callback_on_writable(wsi); //notify when client is able to write
+		break;
+
+	// Now we can write data
+	case LWS_CALLBACK_CLIENT_WRITEABLE:
+		lwsl_info("[Test Protocol] The client is able to write.\n");
 		for(size_t i = 0; i < symbolCount;++i){
 			memset(sending_message, 0, SUBSCRIBE_MESSAGE_LENGTH);
 			snprintf(sending_message, SUBSCRIBE_MESSAGE_LENGTH,"{\"type\":\"subscribe\", \"symbol\":\"%s\"}",Symbols[i]);
 			lwsl_info("[Test Protocol] Writing \"%s\" to server.\n", sending_message);
 			lws_write(wsi, (unsigned char*)sending_message, strlen(sending_message), LWS_WRITE_TEXT);
 		}
-		break;
-
-		// The server notifies us that we can write data
-	case LWS_CALLBACK_CLIENT_WRITEABLE:
-		lwsl_info("[Test Protocol] The client is able to write.\n");
 		break;
 
 		// There was an error connecting to the server
@@ -262,6 +263,7 @@ void* consumerMovingAverage(void* args){
 	struct timespec popTime;
 	uint64_t detentionTime = 0;
 	int8_t diffMinutes = 0;
+	time_t currentTimestamp;
 	movAvgQueuePtr = totalPricePerMinute; //enables ticker thread to check whether queues are full or not
 	for(size_t i = 0; i < symbolCount;++i){
 		totalPricePerMinute[i] = queue_init(MOVING_AVERAGE_INTERVAL_MINUTES, sizeof(double));
@@ -269,7 +271,7 @@ void* consumerMovingAverage(void* args){
 		timestampsPerMinute[i] = queue_init(MOVING_AVERAGE_INTERVAL_MINUTES, sizeof(time_t));
 		totalVolumePerMinute[i] = queue_init(MOVING_AVERAGE_INTERVAL_MINUTES, sizeof(double));
 	}
-	struct tm firstTime, lastTime;
+	struct tm firstTime, lastTime, currentTime;
 	Trade last;
 	while(!bExit){
 		oldDataFound = false;
@@ -285,6 +287,8 @@ void* consumerMovingAverage(void* args){
 		lastTime = *localtime(&last.timestamp);
 		firstTime = *localtime(&movAverages[last.symbolID].first.timestamp);
 		diffMinutes = lastTime.tm_min - firstTime.tm_min;
+		time(&currentTimestamp);
+		currentTime = *localtime(&currentTimestamp);
 		//printf("consumerMA thread got price %.2lf of symbol %s, time: %02d:%02d:%02d, volume: %lf\n",last.price,Symbols[last.symbolID],lastTime.tm_hour,lastTime.tm_min,lastTime.tm_sec,last.volume);
 		//clean up any too old leftover data from the queues
 		if(!totalPricePerMinute[last.symbolID]->isEmpty){
@@ -310,7 +314,7 @@ void* consumerMovingAverage(void* args){
 		if ((int64_t) movAverages[last.symbolID].totalVolume == (int64_t) INIT_VOLUME_VALUE){
 			reset_movAvg(&movAverages[last.symbolID], &last);
 		}
-		else if(diffMinutes > 0 || ( diffMinutes < 0 && abs(diffMinutes) != 1)){
+		else if(diffMinutes > 0 || ( diffMinutes < 0 && currentTime.tm_min == lastTime.tm_min)){
 			totalPrices[last.symbolID] += movAverages[last.symbolID].averagePrice;
 			totalTrades[last.symbolID] += movAverages[last.symbolID].tradeCount;
 			totalVolumes[last.symbolID] += movAverages[last.symbolID].totalVolume;
@@ -334,19 +338,19 @@ void* consumerMovingAverage(void* args){
 			pthread_mutex_unlock(&movAvgMutex);
 		}
 		else{
-			if(diffMinutes < 0 && !( diffMinutes < 0 && abs(diffMinutes) != 1)){ //when an older trade appears out of order later
-				pthread_mutex_lock(&movAvgMutex);
+			if(diffMinutes < 0 && !( diffMinutes < 0 && currentTime.tm_min == lastTime.tm_min)){ //when an older trade appears out of order later
 				if(prev_movAverages[last.symbolID].totalVolume == INIT_VOLUME_VALUE){ //rare occasion, perhaps I must ignore this case
 					printf(MA_LOG_COLOR"Retarded MA initialization for %s! Ignoring!\n"ANSI_RESET,Symbols[last.symbolID]);
 					//reset_movAvg(&prev_movAverages[last.symbolID], &last);
 				}
 				else{
+					pthread_mutex_lock(&movAvgMutex);
 					prev_movAverages[last.symbolID].tradeCount++;
 					prev_movAverages[last.symbolID].averagePrice += last.price;
 					prev_movAverages[last.symbolID].totalVolume += last.volume;
 					prev_movAverages[last.symbolID].stopTime = last.timestamp;
+					pthread_mutex_unlock(&movAvgMutex);
 				}
-				pthread_mutex_unlock(&movAvgMutex);
 			}
 			else{
 				movAverages[last.symbolID].tradeCount++;
@@ -427,7 +431,7 @@ void *ticker(void *arg){
 		time(&lastTime);
 		lastDate = *localtime(&lastTime);
 		if((lastDate.tm_min > firstDate.tm_min || (lastDate.tm_min == 0 && firstDate.tm_min == 59)) && lastDate.tm_sec == 15){ //give a grace period of 15 seconds for late trades
-			printf(TICKER_LOG_COLOR "[TICKER] tick! Grace time for candle generation is over!\n" ANSI_RESET);
+			printf(TICKER_LOG_COLOR "[TICKER] tick! Grace time for data generation is over!\n" ANSI_RESET);
 			firstTime = lastTime;
 			firstDate = lastDate;
 			//minuteCounter++;
@@ -477,10 +481,10 @@ void *ticker(void *arg){
 					printf(TICKER_LOG_COLOR"No MA data for symbol %s!\n"ANSI_RESET,Symbols[i]);
 				}
 				pthread_mutex_unlock(&movAvgMutex);
-				writeDetentionTimesFile("consumerCandle", candleConsDetTimes);
-				writeDetentionTimesFile("consumerMovingAverage", movAvgConsDetTimes);
-				writeDetentionTimesFile("consumerTradeLogger", tradeLogConsDetTimes);
 			}
+			writeDetentionTimesFile("consumerCandle", candleConsDetTimes);
+			writeDetentionTimesFile("consumerMovingAverage", movAvgConsDetTimes);
+			writeDetentionTimesFile("consumerTradeLogger", tradeLogConsDetTimes);
 		}
 		sleep(1);
 	}

@@ -9,7 +9,7 @@ set(CROSS_PATH /home/spyros/Downloads/cross-pi-gcc-10.3.0-0 CACHE STRING "Cross 
 set(SYSROOT ${CROSS_PATH}/arm-linux-gnueabihf CACHE STRING "Cross compiler sysroot path")
 # Target operating system name.
 set(CMAKE_SYSTEM_NAME Linux)
-message("SYSROOT: ${SYSROOT}")
+message(STATUS "SYSROOT: ${SYSROOT}")
 # Name of C compiler.
 set(CMAKE_C_COMPILER ${CROSS_PATH}/bin/arm-linux-gnueabihf-gcc)
 set(CMAKE_CXX_COMPILER ${CROSS_PATH}/bin/arm-linux-gnueabihf-gcc)
