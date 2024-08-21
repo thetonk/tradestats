@@ -40,7 +40,7 @@ size_t getFileLineCount(char *filename);
 void writeCandleFile(char *symbolName, Candle* candle);
 void writeMovingAverageFile(char* symbolName, MovingAverage* movingAverage);
 void writeSymbolTradesFile(char* symbolName, Trade* trade);
-void writeDetentionTimesFile(char *threadName, Vector* data);
+void writeDetentionTimesFile(char *threadName, Vector* data, size_t itemCount);
 void quicksortStrings(char **strings, size_t len);
 size_t searchString(char **strings, char *findStr,size_t len);
 #endif // UTILITIES_H_

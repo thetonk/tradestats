@@ -120,6 +120,9 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 				volumeItem = cJSON_GetObjectItem(item, "v");
 				symbolItem = cJSON_GetObjectItemCaseSensitive(item, "s");
 				symbolID = searchString(Symbols, symbolItem->valuestring, symbolCount);
+				if(symbolID == UINT32_MAX){
+					lwsl_err("Symbol ID %s not found!\n", symbolItem->valuestring);
+				}
 				tradeItem.symbolID = symbolID;
 				tradeItem.price = priceItem->valuedouble;
 				tradeItem.timestamp = (uint64_t) timeItem->valuedouble / 1000;
@@ -172,6 +175,7 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 			lwsl_info("[Test Protocol] Writing \"%s\" to server.\n", sending_message);
 			lws_write(wsi, (unsigned char*)sending_message, strlen(sending_message), LWS_WRITE_TEXT);
 		}
+		lwsl_user("Just subscribed to all specified symbols!\n");
 		break;
 
 		// There was an error connecting to the server
@@ -223,7 +227,8 @@ void *consumerCandle(void *q){
 				pthread_mutex_lock(&candleMutex);
 				prev_candles[last.symbolID].last = last;
 				if((int64_t) prev_candles[last.symbolID].totalVolume == (int64_t) INIT_VOLUME_VALUE){ //rare occasion
-					printf(CANDLE_LOG_COLOR"Retarded Candle initialization for %s\n"ANSI_RESET,Symbols[last.symbolID]);
+					printf(CANDLE_LOG_COLOR"Retarded Candle initialization for %s, with time %02d:%02d:%02d!\n"ANSI_RESET,Symbols[last.symbolID],
+                            lastTime.tm_hour,lastTime.tm_min,lastTime.tm_sec);
 					reset_candle(&prev_candles[last.symbolID], &last);
 				}
 				else{
@@ -340,7 +345,8 @@ void* consumerMovingAverage(void* args){
 		else{
 			if(diffMinutes < 0 && !( diffMinutes < 0 && currentTime.tm_min == lastTime.tm_min)){ //when an older trade appears out of order later
 				if(prev_movAverages[last.symbolID].totalVolume == INIT_VOLUME_VALUE){ //rare occasion, perhaps I must ignore this case
-					printf(MA_LOG_COLOR"Retarded MA initialization for %s! Ignoring!\n"ANSI_RESET,Symbols[last.symbolID]);
+					printf(MA_LOG_COLOR"Retarded MA initialization for %s, with time %02d:%02d:%02d! Ignoring!\n"ANSI_RESET,Symbols[last.symbolID],
+                                 lastTime.tm_hour,lastTime.tm_min,lastTime.tm_sec);
 					//reset_movAvg(&prev_movAverages[last.symbolID], &last);
 				}
 				else{
@@ -430,7 +436,7 @@ void *ticker(void *arg){
 	while(!bExit){
 		time(&lastTime);
 		lastDate = *localtime(&lastTime);
-		if((lastDate.tm_min > firstDate.tm_min || (lastDate.tm_min == 0 && firstDate.tm_min == 59)) && lastDate.tm_sec == 15){ //give a grace period of 15 seconds for late trades
+		if(lastDate.tm_min != firstDate.tm_min && lastDate.tm_sec >= 15){ //give a grace period of 15 seconds for late trades
 			printf(TICKER_LOG_COLOR "[TICKER] tick! Grace time for data generation is over!\n" ANSI_RESET);
 			firstTime = lastTime;
 			firstDate = lastDate;
@@ -482,9 +488,9 @@ void *ticker(void *arg){
 				}
 				pthread_mutex_unlock(&movAvgMutex);
 			}
-			writeDetentionTimesFile("consumerCandle", candleConsDetTimes);
-			writeDetentionTimesFile("consumerMovingAverage", movAvgConsDetTimes);
-			writeDetentionTimesFile("consumerTradeLogger", tradeLogConsDetTimes);
+			writeDetentionTimesFile("consumerCandle", candleConsDetTimes, candleConsDetTimes->size);
+			writeDetentionTimesFile("consumerMovingAverage", movAvgConsDetTimes, movAvgConsDetTimes->size);
+			writeDetentionTimesFile("consumerTradeLogger", tradeLogConsDetTimes, tradeLogConsDetTimes->size);
 		}
 		sleep(1);
 	}
@@ -548,7 +554,11 @@ int main(int argc, char *argv[])
 	memset(totalPrices, 0, symbolCount*sizeof(double));
 	memset(totalTrades,0,symbolCount*sizeof(size_t));
 	memset(totalVolumes,0,symbolCount*sizeof(double));
+	#ifdef DEBUG
 	lws_set_log_level(LLL_ERR| LLL_WARN | LLL_NOTICE | LLL_INFO | LLL_USER, lwsl_emit_stderr);
+	#else
+	lws_set_log_level(LLL_ERR| LLL_WARN | LLL_USER, lwsl_emit_stderr);
+	#endif
 	signal(SIGINT, onSigInt); // Register the SIGINT handler
 	// Connection info
 	//char inputURL[] = "wss://ws.finnhub.io";

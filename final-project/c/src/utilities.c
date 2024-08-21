@@ -111,7 +111,7 @@ size_t searchString(char **strings, char *findStr, size_t len){
             first = middle + 1;
         }
     }
-    return UINT64_MAX; //something is wrong,return an invalid value
+    return UINT32_MAX; //something is wrong,return an invalid value
 }
 
 uint64_t difftimespec_us(const struct timespec *after, const struct timespec *before)
@@ -168,7 +168,7 @@ void writeCandleFile(char *symbolName, Candle *candle){
     if(fileRequiresHeader){
         fputs("Symbol,Timestamp,First,Last,Min,Max,Total Volume\n", fp);
     }
-    fprintf(fp,"%s,%zu,%lf,%lf,%lf,%lf,%lf\n",symbolName,candle->first.timestamp,candle->first.price,candle->last.price,
+    fprintf(fp,"%s,%zu,%lf,%lf,%lf,%lf,%lf\n",symbolName,(size_t)candle->first.timestamp,candle->first.price,candle->last.price,
             candle->min.price,candle->max.price,candle->totalVolume);
     fclose(fp);
 }
@@ -192,7 +192,7 @@ void writeMovingAverageFile(char *symbolName, MovingAverage *movingAverage){
     if(fileRequiresHeader){
         fputs("Symbol,First Timestamp,Last Timestamp,Total Trades,Average Price,Total Volume\n", fp);
     }
-    fprintf(fp,"%s,%zu,%zu,%zu,%lf,%lf\n",symbolName,movingAverage->first.timestamp,movingAverage->stopTime,movingAverage->tradeCount,movingAverage->averagePrice,
+    fprintf(fp,"%s,%zu,%zu,%zu,%lf,%lf\n",symbolName,(size_t)movingAverage->first.timestamp,(size_t)movingAverage->stopTime,movingAverage->tradeCount,movingAverage->averagePrice,
             movingAverage->totalVolume);
     fclose(fp);
 }
@@ -221,7 +221,7 @@ void writeSymbolTradesFile(char *symbolName, Trade *trade){
     fclose(fp);
 }
 
-void writeDetentionTimesFile(char *threadName, Vector *data){
+void writeDetentionTimesFile(char *threadName, Vector *data, size_t itemCount){
     char folderPath[PATH_MAX];
     uint64_t detTime_us = 0;
     snprintf(folderPath, PATH_MAX, "%s/detentionTimes", OUTPUT_DIRECTORY);
@@ -239,9 +239,10 @@ void writeDetentionTimesFile(char *threadName, Vector *data){
     if(fileRequiresHeader){
         fputs("Detention Time (us)\n", fp);
     }
-    while(data->size > 0){
+    while(itemCount > 0){
         vector_pop(data,(uint64_t*) &detTime_us);
         fprintf(fp, "%ld\n",detTime_us);
+        itemCount--;
     }
     fclose(fp);
 }
