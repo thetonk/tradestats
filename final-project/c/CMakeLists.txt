@@ -15,7 +15,7 @@ if(DEBUG)
   set(CMAKE_C_FLAGS "-g -Wall -Wextra")
   add_compile_definitions(DEBUG=1)
 else()
-  set(CMAKE_C_FLAGS "-O2")
+  set(CMAKE_C_FLAGS "-O0")
 endif()
 
 if(CMAKE_TOOLCHAIN_FILE)

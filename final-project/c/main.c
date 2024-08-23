@@ -179,6 +179,7 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 		break;
 
 		// There was an error connecting to the server
+	case LWS_CALLBACK_CLIENT_CLOSED:
 	case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
 		force_reconnect = true;
 		lwsl_err("[Test Protocol] There was a connection error: %s\n", in ? (char*)in : "(no error information)");
@@ -557,7 +558,7 @@ int main(int argc, char *argv[])
 	#ifdef DEBUG
 	lws_set_log_level(LLL_ERR| LLL_WARN | LLL_NOTICE | LLL_INFO | LLL_USER, lwsl_emit_stderr);
 	#else
-	lws_set_log_level(LLL_ERR| LLL_WARN | LLL_USER, lwsl_emit_stderr);
+	lws_set_log_level(LLL_ERR| LLL_WARN | LLL_NOTICE | LLL_USER, lwsl_emit_stderr);
 	#endif
 	signal(SIGINT, onSigInt); // Register the SIGINT handler
 	// Connection info
@@ -606,13 +607,11 @@ int main(int argc, char *argv[])
 		if(wsiTest == NULL || force_reconnect){
 			force_reconnect = false;
 			lwsl_err("Connection destroyed! Attempting reconnect!\n");
+			sleep(3);
 			// Clean up previous WebSocket interface
-			if (wsiTest)
-			{
-				lws_set_timeout(wsiTest, PENDING_TIMEOUT_CLOSE_ACK, LWS_TO_KILL_ASYNC);
-				wsiTest = NULL;
+			if(ctx != NULL){
+				lws_context_destroy(ctx);
 			}
-			lws_context_destroy(ctx);
 			sleep(10);
 			// Create the context with the info
 			setup_context(&ctxCreationInfo);
@@ -622,10 +621,8 @@ int main(int argc, char *argv[])
 			lws_client_connect_via_info(&clientConnectInfo);
 		}
 		// LWS' function to run the message loop, which polls in this example every 100 milliseconds on our created context
-		lws_service(ctx, 100);
-		if(lws_get_socket_fd(wsiTest) == LWS_SOCK_INVALID){
-			wsiTest = NULL;
-			sleep(3);
+		if(ctx != NULL && wsiTest != NULL){
+			lws_service(ctx, 100);
 		}
 	}
 	pthread_join(candleThread,NULL);
