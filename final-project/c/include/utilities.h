@@ -27,6 +27,7 @@ typedef struct {
 	time_t stopTime;
 } MovingAverage;
 
+void print_helptext(char* progname);
 void init_trade(Trade* trade);
 Candle* init_candle(size_t size);
 void reset_candle(Candle* candle, Trade* last);
@@ -39,8 +40,8 @@ char** readSymbolsFile(char *filename, size_t linecount);
 size_t getFileLineCount(char *filename);
 void writeCandleFile(char *symbolName, Candle* candle);
 void writeMovingAverageFile(char* symbolName, MovingAverage* movingAverage);
-void writeSymbolTradesFile(char* symbolName, Trade* trade);
-void writeDetentionTimesFile(char *threadName, Vector* data, size_t itemCount);
+void writeSymbolTradesFile(char* symbolName, Trade* trade, uint64_t delay);
+void writeProcessingTimeFile(char *threadName, uint64_t delay);
 void quicksortStrings(char **strings, size_t len);
 size_t searchString(char **strings, char *findStr,size_t len);
 #endif // UTILITIES_H_

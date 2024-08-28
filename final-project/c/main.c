@@ -23,7 +23,6 @@ static Candle *candles, *prev_candles;
 static MovingAverage* movAverages, *prev_movAverages;
 static bool bDenyDeflate = true;
 static char** Symbols;
-static pthread_t keyLogger;
 static pthread_mutex_t tradeLoggerMutex, candleMutex, movAvgMutex;
 static pthread_cond_t tradeLoggerCondition;
 static size_t *totalTrades;
@@ -31,20 +30,19 @@ static double *totalVolumes, *totalPrices;
 static Queue** movAvgQueuePtr = NULL; //this pointer enables ticker thread to check whether queues are full or not
 static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void *user, void* in, size_t len);
 static Vector *candleConsVector, *movAvgConsVector, *tradeLogConsVector;
-static Vector *candleConsDetTimes, *movAvgConsDetTimes, *tradeLogConsDetTimes;
 
 // Escape the loop when a SIGINT signal is received
 static void onSigInt(int sig)
 {
 	lwsl_warn("Caught SIGINT! Exiting!\n");
 	bExit = true;
-	tradeLogging = true;
-	pthread_cancel(keyLogger); //stop keyLogger
 	//wake up any threads sleeping
 	pthread_cond_signal(candleConsVector->isEmpty);
 	pthread_cond_signal(movAvgConsVector->isEmpty);
-	pthread_cond_signal(&tradeLoggerCondition);
-	pthread_cond_signal(tradeLogConsVector->isEmpty);
+	if(tradeLogging){
+		pthread_cond_signal(&tradeLoggerCondition);
+		pthread_cond_signal(tradeLogConsVector->isEmpty);
+	}
 }
 
 // The registered protocols
@@ -104,7 +102,7 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 				lwsl_err("Error before: %s\n", error_ptr);
 			}
 			bExit = true;
-			return -1;
+			return 5;
 		}
 		//printf("========================================================================\n");
 		//printf("[Test Protocol] Received data: \"%s\", length: %zu bytes\n", (char*)in,len);
@@ -113,34 +111,54 @@ static int callback_test(struct lws* wsi, enum lws_callback_reasons reason, void
 		if (data != NULL){
 			cJSON *item;
 			cJSON_ArrayForEach(item, data){
-				cJSON *priceItem, *timeItem, *volumeItem, *symbolItem;
-				Trade tradeItem;
-				timeItem = cJSON_GetObjectItem(item, "t");
-				priceItem = cJSON_GetObjectItem(item, "p");
-				volumeItem = cJSON_GetObjectItem(item, "v");
-				symbolItem = cJSON_GetObjectItemCaseSensitive(item, "s");
-				symbolID = searchString(Symbols, symbolItem->valuestring, symbolCount);
-				if(symbolID == UINT32_MAX){
-					lwsl_err("Symbol ID %s not found!\n", symbolItem->valuestring);
+				if(item != NULL){
+					cJSON *priceItem, *timeItem, *volumeItem, *symbolItem;
+					Trade tradeItem;
+					time_t currentTimestamp;
+					struct tm tradeDate, currentDate;
+					timeItem = cJSON_GetObjectItem(item, "t");
+					priceItem = cJSON_GetObjectItem(item, "p");
+					volumeItem = cJSON_GetObjectItem(item, "v");
+					symbolItem = cJSON_GetObjectItemCaseSensitive(item, "s");
+					if(symbolItem != NULL && priceItem != NULL && volumeItem != NULL && timeItem != NULL){
+						symbolID = searchString(Symbols, symbolItem->valuestring, symbolCount);
+						if(symbolID == UINT32_MAX){
+							lwsl_err("Symbol ID %s not found!\n", symbolItem->valuestring);
+						}
+						tradeItem.symbolID = symbolID;
+						tradeItem.price = priceItem->valuedouble;
+						tradeItem.timestamp = (uint64_t) timeItem->valuedouble / 1000;
+						tradeItem.volume = volumeItem->valuedouble;
+						tradeDate = *localtime(&tradeItem.timestamp);
+						clock_gettime(CLOCK_MONOTONIC, &tradeItem.insertionTime);
+						time(&currentTimestamp);
+						currentDate = *localtime(&currentTimestamp);
+						// If trade timestamp is on the same minute, pass it to other threads, else ignore it
+						if(currentDate.tm_min == tradeDate.tm_min){
+							pthread_mutex_lock(candleConsVector->mutex);
+							vector_push_back(candleConsVector, &tradeItem);
+							pthread_cond_signal(candleConsVector->isEmpty);
+							pthread_mutex_unlock(candleConsVector->mutex);
+							pthread_mutex_lock(movAvgConsVector->mutex);
+							vector_push_back(movAvgConsVector, &tradeItem);
+							pthread_cond_signal(movAvgConsVector->isEmpty);
+							pthread_mutex_unlock(movAvgConsVector->mutex);
+							if(tradeLogging){ //avoid wasting memory when logging is disabled
+								pthread_mutex_lock(tradeLogConsVector->mutex);
+								vector_push_back(tradeLogConsVector, &tradeItem);
+								pthread_cond_signal(tradeLogConsVector->isEmpty);
+								pthread_mutex_unlock(tradeLogConsVector->mutex);
+							}
+						}
+					}
+					else{
+						if(symbolItem != NULL){
+							lwsl_err("Missing fields for symbol %s!\n",symbolItem->valuestring);
+						}
+					}
 				}
-				tradeItem.symbolID = symbolID;
-				tradeItem.price = priceItem->valuedouble;
-				tradeItem.timestamp = (uint64_t) timeItem->valuedouble / 1000;
-				tradeItem.volume = volumeItem->valuedouble;
-				clock_gettime(CLOCK_MONOTONIC, &tradeItem.insertionTime);
-				pthread_mutex_lock(candleConsVector->mutex);
-				vector_push_back(candleConsVector, &tradeItem);
-				pthread_cond_signal(candleConsVector->isEmpty);
-				pthread_mutex_unlock(candleConsVector->mutex);
-				pthread_mutex_lock(movAvgConsVector->mutex);
-				vector_push_back(movAvgConsVector, &tradeItem);
-				pthread_cond_signal(movAvgConsVector->isEmpty);
-				pthread_mutex_unlock(movAvgConsVector->mutex);
-				if(tradeLogging){ //avoid wasting memory when logging is disabled
-					pthread_mutex_lock(tradeLogConsVector->mutex);
-					vector_push_back(tradeLogConsVector, &tradeItem);
-					pthread_cond_signal(tradeLogConsVector->isEmpty);
-					pthread_mutex_unlock(tradeLogConsVector->mutex);
+				else {
+					lwsl_err("Invalid data JSON object\n");
 				}
 				//printf("Time: %02d:%02d:%02d, symbol: %s, price: %.2lf, volume: %lf\n",ctimestamp.tm_hour,ctimestamp.tm_min,ctimestamp.tm_sec,Symbols[symbolID],priceItem->valuedouble, volumeItem->valuedouble);
 			}
@@ -197,7 +215,7 @@ void *consumerCandle(void *q){
 	Trade last;
 	struct tm firstTime, lastTime;
 	struct timespec popTime;
-	uint64_t detentionTime = 0;
+	uint64_t processingTime = 0;
 	while(!bExit){
 		pthread_mutex_lock(vec->mutex);
 		while(vec->size == 0 && !bExit){
@@ -206,8 +224,10 @@ void *consumerCandle(void *q){
 		vector_pop(candleConsVector,(Trade *) &last);
 		clock_gettime(CLOCK_MONOTONIC, &popTime);
 		pthread_mutex_unlock(vec->mutex);
-		detentionTime = difftimespec_us(&popTime, &last.insertionTime);
-		vector_push_back(candleConsDetTimes, &detentionTime);
+		processingTime = difftimespec_us(&popTime, &last.insertionTime);
+		if(tradeLogging){
+			writeProcessingTimeFile("consumerCandle", processingTime);
+		}
 		candles[last.symbolID].last = last;
 		lastTime = *localtime(&candles[last.symbolID].last.timestamp);
 		firstTime = *localtime(&(candles[last.symbolID].first.timestamp));
@@ -216,15 +236,15 @@ void *consumerCandle(void *q){
 			reset_candle(&candles[last.symbolID], &last);
 		}
 		else if(firstTime.tm_min == lastTime.tm_min -1 || (firstTime.tm_min == 59 && lastTime.tm_min == 0)){
-			printf(CANDLE_LOG_COLOR"FINAL CANDLE for %s initialized! Start time: %02d:%02d:%02d -> %02d:%02d:%02d\n"ANSI_RESET, Symbols[last.symbolID],firstTime.tm_hour,
+			printf(CANDLE_LOG_COLOR"FINAL CANDLE for %s initialized! Time range: %02d:%02d:%02d -> %02d:%02d:%02d\n"ANSI_RESET, Symbols[last.symbolID],firstTime.tm_hour,
 				       firstTime.tm_min,firstTime.tm_sec,lastTime.tm_hour,lastTime.tm_min,lastTime.tm_sec);
 			pthread_mutex_lock(&candleMutex);
 			prev_candles[last.symbolID] = candles[last.symbolID];
 			reset_candle(&candles[last.symbolID], &last);
 			pthread_mutex_unlock(&candleMutex);
 		}
-		else{
-			if(firstTime.tm_min > lastTime.tm_min && !(firstTime.tm_min == 59 && lastTime.tm_min == 0)){ //when an older trade appears out of order later
+		else if(firstTime.tm_min == lastTime.tm_min){
+			/*if(firstTime.tm_min > lastTime.tm_min && !(firstTime.tm_min == 59 && lastTime.tm_min == 0)){ //when an older trade appears out of order later
 				pthread_mutex_lock(&candleMutex);
 				prev_candles[last.symbolID].last = last;
 				if((int64_t) prev_candles[last.symbolID].totalVolume == (int64_t) INIT_VOLUME_VALUE){ //rare occasion
@@ -243,8 +263,8 @@ void *consumerCandle(void *q){
 					prev_candles[last.symbolID].totalVolume += last.volume;
 				}
 				pthread_mutex_unlock(&candleMutex);
-			}
-			else{
+			}*/
+			//else{
 				if(last.price < candles[last.symbolID].min.price){
 					candles[last.symbolID].min = last;
 				}
@@ -252,7 +272,7 @@ void *consumerCandle(void *q){
 					candles[last.symbolID].max = last;
 				}
 				candles[last.symbolID].totalVolume += last.volume;
-			}
+			//}
 		}
 		//printf("%s first %02d:%02d last minute %02d:%02d\n",Symbols[last.symbolID],firstTime.tm_min,firstTime.tm_sec, lastTime.tm_min,lastTime.tm_sec);
 	}
@@ -267,7 +287,7 @@ void* consumerMovingAverage(void* args){
 	Queue** totalVolumePerMinute = (Queue**) malloc(symbolCount*sizeof(Queue*));
 	bool oldDataFound;
 	struct timespec popTime;
-	uint64_t detentionTime = 0;
+	uint64_t processingTime = 0;
 	int8_t diffMinutes = 0;
 	time_t currentTimestamp;
 	movAvgQueuePtr = totalPricePerMinute; //enables ticker thread to check whether queues are full or not
@@ -288,8 +308,10 @@ void* consumerMovingAverage(void* args){
 		vector_pop(movAvgConsVector,(Trade *) &last);
 		clock_gettime(CLOCK_MONOTONIC, &popTime);
 		pthread_mutex_unlock(vec->mutex);
-		detentionTime = difftimespec_us(&popTime, &last.insertionTime);
-		vector_push_back(movAvgConsDetTimes, &detentionTime);
+		processingTime = difftimespec_us(&popTime, &last.insertionTime);
+		if(tradeLogging){
+			writeProcessingTimeFile("consumerMovingAverage", processingTime);
+		}
 		lastTime = *localtime(&last.timestamp);
 		firstTime = *localtime(&movAverages[last.symbolID].first.timestamp);
 		diffMinutes = lastTime.tm_min - firstTime.tm_min;
@@ -332,7 +354,7 @@ void* consumerMovingAverage(void* args){
 			if(totalPricePerMinute[last.symbolID]->isFull || oldDataFound){
 				queue_peek_head(timestampsPerMinute[last.symbolID],(time_t*) &movAverages[last.symbolID].first.timestamp);
 				firstTime = *localtime(&movAverages[last.symbolID].first.timestamp);
-				printf(MA_LOG_COLOR"%s %d FINAL MA triggered! Start time: %02d:%02d:%02d -> %02d:%02d:%02d\n"ANSI_RESET,Symbols[last.symbolID],MOVING_AVERAGE_INTERVAL_MINUTES,
+				printf(MA_LOG_COLOR"%s %d FINAL MA triggered! Time range: %02d:%02d:%02d -> %02d:%02d:%02d\n"ANSI_RESET,Symbols[last.symbolID],MOVING_AVERAGE_INTERVAL_MINUTES,
                      firstTime.tm_hour,firstTime.tm_min,firstTime.tm_sec,lastTime.tm_hour,lastTime.tm_min,lastTime.tm_sec);
 				movAverages[last.symbolID].tradeCount = totalTrades[last.symbolID];
 				movAverages[last.symbolID].averagePrice = totalPrices[last.symbolID];
@@ -344,7 +366,7 @@ void* consumerMovingAverage(void* args){
 			pthread_mutex_unlock(&movAvgMutex);
 		}
 		else{
-			if(diffMinutes < 0 && !( diffMinutes < 0 && currentTime.tm_min == lastTime.tm_min)){ //when an older trade appears out of order later
+			/*if(diffMinutes < 0 && !( diffMinutes < 0 && currentTime.tm_min == lastTime.tm_min)){ //when an older trade appears out of order later
 				if(prev_movAverages[last.symbolID].totalVolume == INIT_VOLUME_VALUE){ //rare occasion, perhaps I must ignore this case
 					printf(MA_LOG_COLOR"Retarded MA initialization for %s, with time %02d:%02d:%02d! Ignoring!\n"ANSI_RESET,Symbols[last.symbolID],
                                  lastTime.tm_hour,lastTime.tm_min,lastTime.tm_sec);
@@ -358,12 +380,13 @@ void* consumerMovingAverage(void* args){
 					prev_movAverages[last.symbolID].stopTime = last.timestamp;
 					pthread_mutex_unlock(&movAvgMutex);
 				}
-			}
-			else{
+			}*/
+			//else{
 				movAverages[last.symbolID].tradeCount++;
 				movAverages[last.symbolID].totalVolume += last.volume;
 				movAverages[last.symbolID].averagePrice += last.price;
-			}
+				movAverages[last.symbolID].stopTime = last.timestamp;
+			//}
 		}
 		//printf("%s first %02d:%02d last minute %02d:%02d\n",Symbols[last.symbolID],firstTime.tm_min,firstTime.tm_sec, lastTime.tm_min,lastTime.tm_sec);
 	}
@@ -384,7 +407,7 @@ void *consumerTradeLogger(void *args){
 	Vector *vec = (Vector*) args;
 	Trade last;
 	struct timespec popTime;
-	uint64_t detentionTime = 0;
+	uint64_t processingTime = 0;
 	while(!bExit){
 		while(!tradeLogging){
 			pthread_cond_wait(&tradeLoggerCondition, &tradeLoggerMutex);
@@ -397,31 +420,11 @@ void *consumerTradeLogger(void *args){
 			vector_pop(vec,(Trade *) &last);
 			clock_gettime(CLOCK_MONOTONIC, &popTime);
 			pthread_mutex_unlock(vec->mutex);
-			detentionTime = difftimespec_us(&popTime, &last.insertionTime);
-			vector_push_back(tradeLogConsDetTimes, &detentionTime);
-			writeSymbolTradesFile(Symbols[last.symbolID], &last);
+			processingTime = difftimespec_us(&popTime, &last.insertionTime);
+			writeSymbolTradesFile(Symbols[last.symbolID], &last, processingTime);
 		}
 		else{
 			pthread_mutex_unlock(vec->mutex);
-		}
-	}
-	return NULL;
-}
-
-void *commandListener(void *arg){
-	const size_t len = 15;
-	char command[len];
-	while(!bExit){
-		memset(command,0,len);
-		fgets(command, len, stdin);
-		if(strcmp(command, "LOGSTART\n") == 0){
-			tradeLogging = true;
-			pthread_cond_signal(&tradeLoggerCondition);
-			printf("enable trade log!\n");
-		}
-		else if (strcmp(command, "LOGSTOP\n") == 0){
-			tradeLogging = false;
-			printf("disable trade log!\n");
 		}
 	}
 	return NULL;
@@ -453,8 +456,11 @@ void *ticker(void *arg){
 				}
 				else{
 					struct tm candleFirstDate = *localtime(&candles[i].first.timestamp);
+					struct tm candleLastDate = *localtime(&candles[i].last.timestamp);
 					if((int64_t) candles[i].totalVolume != INIT_VOLUME_VALUE && candleFirstDate.tm_min == lastDate.tm_min - 1){
-						printf(TICKER_LOG_COLOR"Older candle data for symbol %s can be used!\n"ANSI_RESET,Symbols[i]);
+						printf(TICKER_LOG_COLOR"Older candle data for symbol %s can be used! Time range: %02d:%02d:%02d -> %02d:%02d:%02d\n"ANSI_RESET,
+							   Symbols[i],candleFirstDate.tm_hour,candleFirstDate.tm_min,candleFirstDate.tm_sec,
+                               candleLastDate.tm_hour,candleLastDate.tm_min,candleLastDate.tm_sec);
 						writeCandleFile(Symbols[i], &candles[i]);
 						candles[i].totalVolume = INIT_VOLUME_VALUE;
 					}
@@ -473,7 +479,11 @@ void *ticker(void *arg){
 				}
 				else if((int64_t) movAverages[i].totalVolume != INIT_VOLUME_VALUE && movAvgQueuePtr != NULL){
 					if(movAvgQueuePtr[i]->isFull){
-						printf(TICKER_LOG_COLOR"Older MA data for symbol %s can be used!\n"ANSI_RESET,Symbols[i]);
+						struct tm MAFirstDate = *localtime(&movAverages[i].first.timestamp);
+						struct tm MALastDate = *localtime(&movAverages[i].stopTime);
+						printf(TICKER_LOG_COLOR"Older MA data for symbol %s can be used! Time range: %02d:%02d:%02d -> %02d:%02d:%02d\n"ANSI_RESET,
+							   Symbols[i],MAFirstDate.tm_hour,MAFirstDate.tm_min,MAFirstDate.tm_sec,
+                               MALastDate.tm_hour,MALastDate.tm_min,MALastDate.tm_sec);
 						movAverages[i].averagePrice = totalPrices[i] / totalTrades[i];
 						movAverages[i].tradeCount = totalTrades[i];
 						movAverages[i].totalVolume = totalVolumes[i];
@@ -489,9 +499,6 @@ void *ticker(void *arg){
 				}
 				pthread_mutex_unlock(&movAvgMutex);
 			}
-			writeDetentionTimesFile("consumerCandle", candleConsDetTimes, candleConsDetTimes->size);
-			writeDetentionTimesFile("consumerMovingAverage", movAvgConsDetTimes, movAvgConsDetTimes->size);
-			writeDetentionTimesFile("consumerTradeLogger", tradeLogConsDetTimes, tradeLogConsDetTimes->size);
 		}
 		sleep(1);
 	}
@@ -530,14 +537,37 @@ int main(int argc, char *argv[])
 {
 	char path[80];
 	char *fileName;
-	if(argc == 3){
-		fileName = argv[2];
-		snprintf(path,80,"?token=%s",argv[1]);
-	}
-	else{
-		printf("You must specify your token first and the trading symbol, (e.g COINBASE:BTC-EUR)!\n");
-		printf("Usage: %s TOKEN SYMBOLFILE\n",argv[0]);
-		return 3;
+	switch(argc){
+		case 4:
+			if(strcmp(argv[1], "-l") == 0){
+				tradeLogging = true;
+				fileName = argv[3];
+				snprintf(path,80,"?token=%s",argv[2]);
+				printf("Trade logging enabled!\n");
+			}
+			else{
+				printf("Invalid option! Try again!\n");
+				print_helptext(argv[0]);
+				return 3;
+			}
+			break;
+		case 3:
+			fileName = argv[2];
+			snprintf(path,80,"?token=%s",argv[1]);
+			break;
+		case 2:
+			if(strcmp(argv[1], "--help") == 0){
+				print_helptext(argv[0]);
+			}
+			else{
+				printf("Invalid option! Try again!\n");
+				print_helptext(argv[0]);
+			}
+			return 3;
+		default:
+			printf("Invalid option! Try again!\n");
+			print_helptext(argv[0]);
+			return 3;
 	}
 	setvbuf(stdout,NULL,_IONBF,0); //disable printf buffering
 	mkdir(OUTPUT_DIRECTORY,0755); //create outputFolder
@@ -580,10 +610,6 @@ int main(int argc, char *argv[])
 	//initialize consumer queues
 	candleConsVector = vector_init(VECTOR_INIT_SIZE,sizeof(Trade));
 	movAvgConsVector = vector_init(VECTOR_INIT_SIZE, sizeof(Trade));
-	tradeLogConsVector = vector_init(VECTOR_INIT_SIZE, sizeof(Trade));
-	candleConsDetTimes = vector_init(VECTOR_INIT_SIZE, sizeof(uint64_t));
-	movAvgConsDetTimes = vector_init(VECTOR_INIT_SIZE, sizeof(uint64_t));
-	tradeLogConsDetTimes = vector_init(VECTOR_INIT_SIZE, sizeof(uint64_t));
 	// Connect with the client info
 	lws_client_connect_via_info(&clientConnectInfo);
 	if (wsiTest == NULL)
@@ -596,10 +622,12 @@ int main(int argc, char *argv[])
 	pthread_mutex_init(&movAvgMutex, NULL);
 	pthread_create(&candleThread,NULL,consumerCandle,candleConsVector);
 	pthread_create(&movingAverageThread, NULL, consumerMovingAverage, movAvgConsVector);
-	pthread_create(&tradeLoggerThread,NULL,consumerTradeLogger,tradeLogConsVector);
-	pthread_mutex_init(&tradeLoggerMutex, NULL);
-	pthread_cond_init(&tradeLoggerCondition, NULL);
-	pthread_create(&keyLogger, NULL, commandListener, NULL);
+	if(tradeLogging){
+		tradeLogConsVector = vector_init(VECTOR_INIT_SIZE, sizeof(Trade));
+		pthread_mutex_init(&tradeLoggerMutex, NULL);
+		pthread_cond_init(&tradeLoggerCondition, NULL);
+		pthread_create(&tradeLoggerThread,NULL,consumerTradeLogger,tradeLogConsVector);
+	}
 	pthread_create(&tickerThread, NULL, ticker, NULL);
 	// Main loop runs till bExit is true, which forces an exit of this loop
 	while (!bExit)
@@ -627,10 +655,12 @@ int main(int argc, char *argv[])
 	}
 	pthread_join(candleThread,NULL);
 	pthread_join(movingAverageThread,NULL);
-	pthread_join(tradeLoggerThread,NULL);
-	pthread_cond_destroy(&tradeLoggerCondition);
-	pthread_mutex_destroy(&tradeLoggerMutex);
-	pthread_join(keyLogger,NULL);
+	if(tradeLogging){
+		pthread_join(tradeLoggerThread,NULL);
+		pthread_cond_destroy(&tradeLoggerCondition);
+		pthread_mutex_destroy(&tradeLoggerMutex);
+		vector_destroy(tradeLogConsVector);
+	}
 	pthread_join(tickerThread, NULL);
 	pthread_mutex_destroy(&candleMutex);
 	pthread_mutex_destroy(&movAvgMutex);
@@ -638,10 +668,6 @@ int main(int argc, char *argv[])
 	lws_context_destroy(ctx);
 	vector_destroy(candleConsVector);
 	vector_destroy(movAvgConsVector);
-	vector_destroy(tradeLogConsVector);
-	vector_destroy(candleConsDetTimes);
-	vector_destroy(movAvgConsDetTimes);
-	vector_destroy(tradeLogConsDetTimes);
 	for(size_t i = 0; i < symbolCount; ++i){
 		free(Symbols[i]);
 	}

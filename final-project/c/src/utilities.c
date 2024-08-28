@@ -2,6 +2,7 @@
 #include "constants.h"
 #include "vector.h"
 #include <linux/limits.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 #include <errno.h>
@@ -11,11 +12,17 @@
 #include <stdio.h>
 #include <time.h>
 
+void print_helptext(char* progname){
+    printf("Usage: %s [-l] TOKEN SYMBOLFILE\n",progname);
+	printf("-l: (Optional) Enable trade logs\n");
+}
+
 void init_trade(Trade* trade){
     trade->price = 0;
     trade->symbolID = 0;
     trade->timestamp = 0;
     trade->volume = 0;
+    memset(&trade->insertionTime, 0, sizeof(struct timespec));
 }
 
 Candle* init_candle(size_t size){
@@ -166,9 +173,9 @@ void writeCandleFile(char *symbolName, Candle *candle){
         return;
     }
     if(fileRequiresHeader){
-        fputs("Symbol,Timestamp,First,Last,Min,Max,Total Volume\n", fp);
+        fputs("Symbol,First Timestamp,Last Timestamp,First Price,Last Price,Min Price,Max Price,Total Volume\n", fp);
     }
-    fprintf(fp,"%s,%zu,%lf,%lf,%lf,%lf,%lf\n",symbolName,(size_t)candle->first.timestamp,candle->first.price,candle->last.price,
+    fprintf(fp,"%s,%zu,%zu,%lf,%lf,%lf,%lf,%lf\n",symbolName,(size_t)candle->first.timestamp,(size_t)candle->last.timestamp,candle->first.price,candle->last.price,
             candle->min.price,candle->max.price,candle->totalVolume);
     fclose(fp);
 }
@@ -197,7 +204,7 @@ void writeMovingAverageFile(char *symbolName, MovingAverage *movingAverage){
     fclose(fp);
 }
 
-void writeSymbolTradesFile(char *symbolName, Trade *trade){
+void writeSymbolTradesFile(char *symbolName, Trade *trade, uint64_t delay){
     //filename format will be SYMBOL_trades
     //Write CSV file
     char folderPath[PATH_MAX];
@@ -215,16 +222,15 @@ void writeSymbolTradesFile(char *symbolName, Trade *trade){
         return;
     }
     if(fileRequiresHeader){
-        fputs("Symbol,Timestamp,Price,Volume\n", fp);
+        fputs("Symbol,Timestamp,Processing Time (us),Price,Volume\n", fp);
     }
-    fprintf(fp,"%s,%02d:%02d:%02d,%lf,%lf\n",symbolName,timedate.tm_hour,timedate.tm_min,timedate.tm_sec,trade->price,trade->volume);
+    fprintf(fp,"%s,%02d:%02d:%02d,%ld,%lf,%lf\n",symbolName,timedate.tm_hour,timedate.tm_min,timedate.tm_sec,delay,trade->price,trade->volume);
     fclose(fp);
 }
 
-void writeDetentionTimesFile(char *threadName, Vector *data, size_t itemCount){
+void writeProcessingTimeFile(char *threadName, uint64_t delay){
     char folderPath[PATH_MAX];
-    uint64_t detTime_us = 0;
-    snprintf(folderPath, PATH_MAX, "%s/detentionTimes", OUTPUT_DIRECTORY);
+    snprintf(folderPath, PATH_MAX, "%s/processingTimes", OUTPUT_DIRECTORY);
     const size_t filenameLength = strlen(folderPath)+strlen(threadName)+strlen(".csv") + 2; //extra 2 bytes needed, 1 for / and 1 for null char
     char filePath[filenameLength+1];
     mkdir(folderPath, 0755);
@@ -237,12 +243,8 @@ void writeDetentionTimesFile(char *threadName, Vector *data, size_t itemCount){
         return;
     }
     if(fileRequiresHeader){
-        fputs("Detention Time (us)\n", fp);
+        fputs("Processing Time (us)\n", fp);
     }
-    while(itemCount > 0){
-        vector_pop(data,(uint64_t*) &detTime_us);
-        fprintf(fp, "%ld\n",detTime_us);
-        itemCount--;
-    }
+    fprintf(fp, "%ld\n",delay);
     fclose(fp);
 }

@@ -12,7 +12,7 @@ set(STATS_OUTPUT_DIR "out" CACHE STRING "Output directory path for statistics an
 option(DEBUG "Add debug flags on compilation (debug symbols, warnings, etc)" OFF)
 
 if(DEBUG)
-  set(CMAKE_C_FLAGS "-g -Wall -Wextra")
+  set(CMAKE_C_FLAGS "-O0 -g -rdynamic -Wall -Wextra -funwind-tables -fasynchronous-unwind-tables")
   add_compile_definitions(DEBUG=1)
 else()
   set(CMAKE_C_FLAGS "-O0")

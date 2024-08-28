@@ -55,7 +55,7 @@ bool vector_push_back(Vector *vec, void* value) {
 bool vector_pop(Vector* vec, void* out) {
     if(vec->size > 0){
         memcpy(out,(char*) vec->data,vec->elemSize);
-        memcpy((char*) vec->data, (char *) vec->data + vec->elemSize, (vec->size-1)*vec->elemSize);
+        memmove((char*) vec->data, (char *) vec->data + vec->elemSize, (vec->size-1)*vec->elemSize);
         vec->size--;
         return true;
     }
