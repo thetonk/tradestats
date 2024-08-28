@@ -19,7 +19,8 @@ This application can be built using CMake. To build it follow the steps below:
 
 The executable then can be found under folder `bin`.
 
-> [!IMPORTANT] Cross compilation for Raspberry Pi.
+> [!IMPORTANT] 
+> **Cross compilation for Raspberry Pi.**
 > In order to cross compile, you need to specify the `SYSROOT` and `CROSS_PATH` settings. You may call CMake like this: `cmake -DCMAKE_TOOLCHAIN_FILE="$(realpath ../cross-toolchain.cmake)" -DSYSROOT="path" -DCROSS_PATH="cross-path"` and then compile using `make`. Also, you may need to copy the directories under libc to the sysroot path.
 
 ### Optional settings
@@ -37,4 +38,6 @@ You may customize the program with the following optional settings:
 ## Usage
 In order to run it, you will need your finnhub API token and a [symbols.txt](./symbols.txt) file just like the one I provided.
 
-`$ <executable name> <your finnhub API token> <path-to-symbols.txt-file>`
+`$ <executable name> [-l] <your finnhub API token> <path-to-symbols.txt-file>`
+
+Use `-l` to enable trade logging and trade processing times logging.
