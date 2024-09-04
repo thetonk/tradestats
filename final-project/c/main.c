@@ -214,20 +214,13 @@ void *consumerCandle(void *q){
 	Vector *vec = (Vector*) q;
 	Trade last;
 	struct tm firstTime, lastTime;
-	struct timespec popTime;
-	uint64_t processingTime = 0;
 	while(!bExit){
 		pthread_mutex_lock(vec->mutex);
 		while(vec->size == 0 && !bExit){
 			pthread_cond_wait(vec->isEmpty,vec->mutex);
 		}
 		vector_pop(candleConsVector,(Trade *) &last);
-		clock_gettime(CLOCK_MONOTONIC, &popTime);
 		pthread_mutex_unlock(vec->mutex);
-		processingTime = difftimespec_us(&popTime, &last.insertionTime);
-		if(tradeLogging){
-			writeProcessingTimeFile("consumerCandle", processingTime);
-		}
 		candles[last.symbolID].last = last;
 		lastTime = *localtime(&candles[last.symbolID].last.timestamp);
 		firstTime = *localtime(&(candles[last.symbolID].first.timestamp));
@@ -244,27 +237,6 @@ void *consumerCandle(void *q){
 			pthread_mutex_unlock(&candleMutex);
 		}
 		else if(firstTime.tm_min == lastTime.tm_min){
-			/*if(firstTime.tm_min > lastTime.tm_min && !(firstTime.tm_min == 59 && lastTime.tm_min == 0)){ //when an older trade appears out of order later
-				pthread_mutex_lock(&candleMutex);
-				prev_candles[last.symbolID].last = last;
-				if((int64_t) prev_candles[last.symbolID].totalVolume == (int64_t) INIT_VOLUME_VALUE){ //rare occasion
-					printf(CANDLE_LOG_COLOR"Retarded Candle initialization for %s, with time %02d:%02d:%02d!\n"ANSI_RESET,Symbols[last.symbolID],
-                            lastTime.tm_hour,lastTime.tm_min,lastTime.tm_sec);
-					reset_candle(&prev_candles[last.symbolID], &last);
-				}
-				else{
-					//printf("An older trade arrived late of symbol %s!\n",Symbols[last.symbolID]);
-					if(last.price < prev_candles[last.symbolID].min.price){
-						prev_candles[last.symbolID].min = last;
-					}
-					if(last.price > prev_candles[last.symbolID].max.price){
-						prev_candles[last.symbolID].max = last;
-					}
-					prev_candles[last.symbolID].totalVolume += last.volume;
-				}
-				pthread_mutex_unlock(&candleMutex);
-			}*/
-			//else{
 				if(last.price < candles[last.symbolID].min.price){
 					candles[last.symbolID].min = last;
 				}
@@ -272,9 +244,7 @@ void *consumerCandle(void *q){
 					candles[last.symbolID].max = last;
 				}
 				candles[last.symbolID].totalVolume += last.volume;
-			//}
 		}
-		//printf("%s first %02d:%02d last minute %02d:%02d\n",Symbols[last.symbolID],firstTime.tm_min,firstTime.tm_sec, lastTime.tm_min,lastTime.tm_sec);
 	}
 	return NULL;
 }
@@ -286,8 +256,6 @@ void* consumerMovingAverage(void* args){
 	Queue** timestampsPerMinute = (Queue**) malloc(symbolCount*sizeof(Queue*));
 	Queue** totalVolumePerMinute = (Queue**) malloc(symbolCount*sizeof(Queue*));
 	bool oldDataFound;
-	struct timespec popTime;
-	uint64_t processingTime = 0;
 	int8_t diffMinutes = 0;
 	time_t currentTimestamp;
 	movAvgQueuePtr = totalPricePerMinute; //enables ticker thread to check whether queues are full or not
@@ -306,19 +274,12 @@ void* consumerMovingAverage(void* args){
 			pthread_cond_wait(vec->isEmpty,vec->mutex);
 		}
 		vector_pop(movAvgConsVector,(Trade *) &last);
-		clock_gettime(CLOCK_MONOTONIC, &popTime);
 		pthread_mutex_unlock(vec->mutex);
-		processingTime = difftimespec_us(&popTime, &last.insertionTime);
-		if(tradeLogging){
-			writeProcessingTimeFile("consumerMovingAverage", processingTime);
-		}
 		lastTime = *localtime(&last.timestamp);
 		firstTime = *localtime(&movAverages[last.symbolID].first.timestamp);
 		diffMinutes = lastTime.tm_min - firstTime.tm_min;
 		time(&currentTimestamp);
 		currentTime = *localtime(&currentTimestamp);
-		//printf("consumerMA thread got price %.2lf of symbol %s, time: %02d:%02d:%02d, volume: %lf\n",last.price,Symbols[last.symbolID],lastTime.tm_hour,lastTime.tm_min,lastTime.tm_sec,last.volume);
-		//clean up any too old leftover data from the queues
 		if(!totalPricePerMinute[last.symbolID]->isEmpty){
 			time_t timestamp;
 			for(size_t i = 0; i < totalPricePerMinute[last.symbolID]->size;++i){
@@ -366,29 +327,11 @@ void* consumerMovingAverage(void* args){
 			pthread_mutex_unlock(&movAvgMutex);
 		}
 		else{
-			/*if(diffMinutes < 0 && !( diffMinutes < 0 && currentTime.tm_min == lastTime.tm_min)){ //when an older trade appears out of order later
-				if(prev_movAverages[last.symbolID].totalVolume == INIT_VOLUME_VALUE){ //rare occasion, perhaps I must ignore this case
-					printf(MA_LOG_COLOR"Retarded MA initialization for %s, with time %02d:%02d:%02d! Ignoring!\n"ANSI_RESET,Symbols[last.symbolID],
-                                 lastTime.tm_hour,lastTime.tm_min,lastTime.tm_sec);
-					//reset_movAvg(&prev_movAverages[last.symbolID], &last);
-				}
-				else{
-					pthread_mutex_lock(&movAvgMutex);
-					prev_movAverages[last.symbolID].tradeCount++;
-					prev_movAverages[last.symbolID].averagePrice += last.price;
-					prev_movAverages[last.symbolID].totalVolume += last.volume;
-					prev_movAverages[last.symbolID].stopTime = last.timestamp;
-					pthread_mutex_unlock(&movAvgMutex);
-				}
-			}*/
-			//else{
 				movAverages[last.symbolID].tradeCount++;
 				movAverages[last.symbolID].totalVolume += last.volume;
 				movAverages[last.symbolID].averagePrice += last.price;
 				movAverages[last.symbolID].stopTime = last.timestamp;
-			//}
 		}
-		//printf("%s first %02d:%02d last minute %02d:%02d\n",Symbols[last.symbolID],firstTime.tm_min,firstTime.tm_sec, lastTime.tm_min,lastTime.tm_sec);
 	}
 	for(size_t i = 0; i < symbolCount;++i){
 		queue_destroy(totalPricePerMinute[i]);
@@ -433,7 +376,6 @@ void *consumerTradeLogger(void *args){
 void *ticker(void *arg){
 	time_t firstTime, lastTime;
 	struct tm firstDate,lastDate;
-	//size_t minuteCounter = 0;
 	time(&lastTime);
 	firstTime = lastTime;
 	firstDate = *localtime(&firstTime);
@@ -444,13 +386,10 @@ void *ticker(void *arg){
 			printf(TICKER_LOG_COLOR "[TICKER] tick! Grace time for data generation is over!\n" ANSI_RESET);
 			firstTime = lastTime;
 			firstDate = lastDate;
-			//minuteCounter++;
 			//save candlesticks to files
 			for(size_t i = 0; i < symbolCount; ++i){
 				pthread_mutex_lock(&candleMutex);
 				if((int64_t) prev_candles[i].totalVolume != (int64_t) INIT_VOLUME_VALUE){
-					//printf("[LAST MINUTE CANDLE %s] max: %.2lf min: %.2lf first: %.2lf, last %.2lf total volume: %.2lf\n",Symbols[i],prev_candles[i].max.price,prev_candles[i].min.price,
-					//   prev_candles[i].first.price,prev_candles[i].last.price,prev_candles[i].totalVolume);
 					writeCandleFile(Symbols[i], &prev_candles[i]);
 					prev_candles[i].totalVolume = INIT_VOLUME_VALUE;
 				}
@@ -472,8 +411,6 @@ void *ticker(void *arg){
 				pthread_mutex_lock(&movAvgMutex);
 				if((int64_t) prev_movAverages[i].totalVolume != (int64_t) INIT_VOLUME_VALUE){
 					prev_movAverages[i].averagePrice = prev_movAverages[i].averagePrice / prev_movAverages[i].tradeCount;
-					//printf("[%d MINUTE MA %s] total trades: %zu average price: %.2lf total volume: %.2lf\n",MOVING_AVERAGE_INTERVAL_MINUTES,Symbols[i],
-					//	   prev_movAverages[i].tradeCount,prev_movAverages[i].averagePrice,prev_movAverages[i].totalVolume);
 					writeMovingAverageFile(Symbols[i], &prev_movAverages[i]);
 					prev_movAverages[i].totalVolume = INIT_VOLUME_VALUE;
 				}

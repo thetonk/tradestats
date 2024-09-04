@@ -121,6 +121,15 @@ size_t searchString(char **strings, char *findStr, size_t len){
     return UINT32_MAX; //something is wrong,return an invalid value
 }
 
+char* replace_char(char* str, char find, char replace){
+    char *current_pos = strchr(str,find);
+    while (current_pos != NULL) {
+        *current_pos = replace;
+        current_pos = strchr(current_pos+1,find);
+    }
+    return str;
+}
+
 uint64_t difftimespec_us(const struct timespec *after, const struct timespec *before)
 {
     return (uint64_t) ((int64_t)after->tv_sec - (int64_t)before->tv_sec) * (int64_t)1000000
@@ -159,12 +168,15 @@ char** readSymbolsFile(char *filename, size_t linecount){
 void writeCandleFile(char *symbolName, Candle *candle){
     //filename format will be SYMBOL_candles
     //Write CSV file
-    char folderPath[PATH_MAX];
+    char folderPath[PATH_MAX], symbol[SYMBOL_LENGTH];
+    char *normSymbolName;
+    memcpy(symbol, symbolName, SYMBOL_LENGTH);
+    normSymbolName = replace_char(symbol, ':', '-');
     snprintf(folderPath,PATH_MAX, "%s/candleSticks",OUTPUT_DIRECTORY);
     const size_t filenameLength = strlen(folderPath)+SYMBOL_LENGTH+strlen("_candles.csv")+2; //extra 2 bytes needed, 1 for / and 1 for null char
     char filename[filenameLength];
     mkdir(folderPath, 0755);
-    snprintf(filename,filenameLength,"%s/%s_candles.csv",folderPath,symbolName);
+    snprintf(filename,filenameLength,"%s/%s_candles.csv",folderPath,normSymbolName);
     struct stat stats;
     bool fileRequiresHeader = (stat(filename, &stats) != 0);
     FILE *fp = fopen(filename, "a");
@@ -183,12 +195,15 @@ void writeCandleFile(char *symbolName, Candle *candle){
 void writeMovingAverageFile(char *symbolName, MovingAverage *movingAverage){
     //filename format will be SYMBOL_movingAverages
     //Write CSV file
-    char folderPath[PATH_MAX];
+    char folderPath[PATH_MAX], symbol[SYMBOL_LENGTH];
+    char *normSymbolName;
+    memcpy(symbol,symbolName,SYMBOL_LENGTH);
+    normSymbolName = replace_char(symbol, ':', '-');
     snprintf(folderPath,PATH_MAX, "%s/movingAverages",OUTPUT_DIRECTORY);
     const size_t filenameLength = strlen(folderPath)+SYMBOL_LENGTH+strlen("_movingAverages.csv")+2; //extra 2 bytes needed, 1 for / and 1 for null char
     char filename[filenameLength];
     mkdir(folderPath, 0755);
-    snprintf(filename,filenameLength,"%s/%s_movingAverages.csv",folderPath,symbolName);
+    snprintf(filename,filenameLength,"%s/%s_movingAverages.csv",folderPath,normSymbolName);
     struct stat stats;
     bool fileRequiresHeader = (stat(filename, &stats) != 0);
     FILE *fp = fopen(filename, "a");
@@ -207,13 +222,16 @@ void writeMovingAverageFile(char *symbolName, MovingAverage *movingAverage){
 void writeSymbolTradesFile(char *symbolName, Trade *trade, uint64_t delay){
     //filename format will be SYMBOL_trades
     //Write CSV file
-    char folderPath[PATH_MAX];
+    char folderPath[PATH_MAX], symbol[SYMBOL_LENGTH];
+    char *normSymbolName;
+    memcpy(symbol,symbolName,SYMBOL_LENGTH);
+    normSymbolName = replace_char(symbol, ':', '-');
     snprintf(folderPath,PATH_MAX, "%s/tradeLogs",OUTPUT_DIRECTORY);
     const size_t filenameLength = strlen(folderPath)+SYMBOL_LENGTH+strlen("_trades.csv")+2; //extra 2 bytes needed, 1 for / and 1 for null char
     struct tm timedate = *localtime(&trade->timestamp);
     char filename[filenameLength];
     mkdir(folderPath, 0755);
-    snprintf(filename,filenameLength,"%s/%s_trades.csv",folderPath,symbolName);
+    snprintf(filename,filenameLength,"%s/%s_trades.csv",folderPath,normSymbolName);
     struct stat stats;
     bool fileRequiresHeader = (stat(filename, &stats) != 0);
     FILE *fp = fopen(filename, "a");
@@ -225,26 +243,5 @@ void writeSymbolTradesFile(char *symbolName, Trade *trade, uint64_t delay){
         fputs("Symbol,Timestamp,Processing Time (us),Price,Volume\n", fp);
     }
     fprintf(fp,"%s,%02d:%02d:%02d,%ld,%lf,%lf\n",symbolName,timedate.tm_hour,timedate.tm_min,timedate.tm_sec,delay,trade->price,trade->volume);
-    fclose(fp);
-}
-
-void writeProcessingTimeFile(char *threadName, uint64_t delay){
-    char folderPath[PATH_MAX];
-    snprintf(folderPath, PATH_MAX, "%s/processingTimes", OUTPUT_DIRECTORY);
-    const size_t filenameLength = strlen(folderPath)+strlen(threadName)+strlen(".csv") + 2; //extra 2 bytes needed, 1 for / and 1 for null char
-    char filePath[filenameLength+1];
-    mkdir(folderPath, 0755);
-    snprintf(filePath, filenameLength, "%s/%s.csv", folderPath,threadName);
-    struct stat stats;
-    bool fileRequiresHeader = (stat(filePath, &stats) != 0);
-    FILE *fp = fopen(filePath, "a");
-    if (fp == NULL){
-        printf(ERROR_LOG_COLOR"Cannot create file %s. Reason: %s\n"ANSI_RESET, filePath, strerror(errno));
-        return;
-    }
-    if(fileRequiresHeader){
-        fputs("Processing Time (us)\n", fp);
-    }
-    fprintf(fp, "%ld\n",delay);
     fclose(fp);
 }

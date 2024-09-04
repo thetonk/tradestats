@@ -15,7 +15,7 @@ if(DEBUG)
   set(CMAKE_C_FLAGS "-O0 -g -rdynamic -Wall -Wextra -funwind-tables -fasynchronous-unwind-tables")
   add_compile_definitions(DEBUG=1)
 else()
-  set(CMAKE_C_FLAGS "-O0")
+  set(CMAKE_C_FLAGS "-O2")
 endif()
 
 if(CMAKE_TOOLCHAIN_FILE)

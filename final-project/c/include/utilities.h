@@ -41,7 +41,7 @@ size_t getFileLineCount(char *filename);
 void writeCandleFile(char *symbolName, Candle* candle);
 void writeMovingAverageFile(char* symbolName, MovingAverage* movingAverage);
 void writeSymbolTradesFile(char* symbolName, Trade* trade, uint64_t delay);
-void writeProcessingTimeFile(char *threadName, uint64_t delay);
 void quicksortStrings(char **strings, size_t len);
 size_t searchString(char **strings, char *findStr,size_t len);
+char* replace_char(char* str, char find, char replace);
 #endif // UTILITIES_H_
