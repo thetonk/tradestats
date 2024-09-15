@@ -6,7 +6,7 @@ Real time statistics for stocks, forex and crypto, using data from [FinnHub](htt
 > OpenSSL version 3.0 or higher is required, otherwise compilation will fail!
 
 > [!NOTE]
-> This compilation process has been tested on linux x86 system and a raspberry pi 1 model B.
+> This compilation process has been tested on linux x86_64 system and a Raspberry Pi 1 model B (armv6). Currently, cross compilation for arm64 is not supported.
 
 This application can be built using CMake. To build it follow the steps below:
 1. Create a build directory and switch to it
@@ -28,7 +28,7 @@ You may customize the program with the following optional settings:
 
 | Option name|Default value|Example usage| Description|
 |--|---|---|---|
-|`MA_INTERVAL`|3| `-DMA_INTERVAL=15`|moving average calculation window, in minutes|
+|`MA_INTERVAL`|15| `-DMA_INTERVAL=4`|moving average calculation window, in minutes|
 |`EXECUTABLE_NAME`|"main"| `-DEXECUTABLE_NAME="tradestats"`| name of the executable|
 |`DEBUG`|OFF|`-DDEBUG=ON`|turn on/off debugging symbols, warnings and more verbose output|
 |`STATS_OUTPUT_DIR`|"out"|`-DSTATS_OUTPUT_DIR="out"`|set the name of the folder which will contain the statistics|

@@ -396,7 +396,8 @@ void *ticker(void *arg){
 				else{
 					struct tm candleFirstDate = *localtime(&candles[i].first.timestamp);
 					struct tm candleLastDate = *localtime(&candles[i].last.timestamp);
-					if((int64_t) candles[i].totalVolume != INIT_VOLUME_VALUE && candleFirstDate.tm_min == lastDate.tm_min - 1){
+					if((int64_t) candles[i].totalVolume != INIT_VOLUME_VALUE && (candleFirstDate.tm_min == lastDate.tm_min - 1 ||
+                                      (candleFirstDate.tm_min == 59 && lastDate.tm_min == 0 ))){
 						printf(TICKER_LOG_COLOR"Older candle data for symbol %s can be used! Time range: %02d:%02d:%02d -> %02d:%02d:%02d\n"ANSI_RESET,
 							   Symbols[i],candleFirstDate.tm_hour,candleFirstDate.tm_min,candleFirstDate.tm_sec,
                                candleLastDate.tm_hour,candleLastDate.tm_min,candleLastDate.tm_sec);

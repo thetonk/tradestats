@@ -9,4 +9,8 @@ tests/
 !requirements.txt
 !CMakeLists.txt
 !symbols.txt
+!perf.txt
 *.heap
+*.bbl
+*.bib
+.auctex-auto

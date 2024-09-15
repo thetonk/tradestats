@@ -1,0 +1,14 @@
+# started on Mon Sep  9 15:54:37 2024
+
+
+ Performance counter stats for process id '1474':
+
+     12,875,278.72 msec task-clock                       #    0.047 CPUs utilized             
+   <not supported>      cache-references                                                      
+   <not supported>      cache-misses                                                          
+         8,544,321      context-switches                 #  663.622 /sec                      
+    42,524,471,070      branch-misses                    #   16.80% of all branches           
+   253,162,886,098      branches                         #   19.663 M/sec                     
+
+  273996.147027561 seconds time elapsed
+
